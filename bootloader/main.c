@@ -166,6 +166,7 @@ static EFI_STATUS Phase07_LoadSegments(EFI_FILE_PROTOCOL *File, const ELF64_EHDR
         Status = File->Read(File, &Size, (VOID*)(UINTN)Phdrs[i].p_paddr);
         if (EFI_ERROR(Status))
             return Status;
+        __asm__ volatile("wbinvd");
         if (Phdrs[i].p_memsz > Phdrs[i].p_filesz)
             SetMem((VOID*)(UINTN)(Phdrs[i].p_paddr + Phdrs[i].p_filesz), (UINTN)(Phdrs[i].p_memsz - Phdrs[i].p_filesz), 0);
     }
@@ -288,7 +289,16 @@ static EFI_STATUS Phase10_JumpKernel(const ELF64_EHDR *Hdr, LOADER_PARAMS *Param
 {
     KERNEL_ENTRY Entry = (KERNEL_ENTRY)(UINTN)Hdr->e_entry;
     Print(L"Jumping to kernel...\n");
-    gBS->ExitBootServices(mImageHandle, Params->MapKey);
+    {
+        UINTN MapSize = 0;
+        EFI_MEMORY_DESCRIPTOR *Map = NULL;
+        UINTN MapKey, DescSize;
+        UINT32 DescVer;
+        gBS->GetMemoryMap(&MapSize, Map, &MapKey, &DescSize, &DescVer);
+        gBS->AllocatePool(EfiLoaderData, MapSize, (VOID**)&Map);
+        gBS->GetMemoryMap(&MapSize, Map, &MapKey, &DescSize, &DescVer);
+        gBS->ExitBootServices(mImageHandle, MapKey);
+    }
     Entry(Params);
     return EFI_SUCCESS;
 }
@@ -416,15 +426,15 @@ static void set_gdt_entry(int idx, uint32_t base, uint32_t limit, uint8_t access
     gdt[idx].base_mid  = (base >> 16) & 0xFF;
     gdt[idx].access    = access;
     gdt[idx].gran      = (limit >> 16) & 0x0F;
-    gdt[idx].gran     |= gran & 0xF0;
+    gdt[idx].gran     |= gran & 0xF0; // Granularity: Set 4K page granularity and 64-bit segment
     gdt[idx].base_hi   = (base >> 24) & 0xFF;
 }
 
 void Phase23_GdtInit(void)
 {
     set_gdt_entry(0, 0, 0, 0, 0);
-    set_gdt_entry(1, 0, 0xFFFFF, 0x9A, 0xA0);
-    set_gdt_entry(2, 0, 0xFFFFF, 0x92, 0xA0);
+    set_gdt_entry(1, 0, 0xFFFFF, 0x9A, 0xC0);
+    set_gdt_entry(2, 0, 0xFFFFF, 0x92, 0xC0);
     gdtp.limit = sizeof(gdt) - 1;
     gdtp.base  = (uint64_t)gdt;
     __asm__ volatile("lgdt %0" :: "m"(gdtp));
@@ -459,8 +469,8 @@ typedef struct {
 
 void Phase25_IsrHandler(uint64_t num, uint64_t err, InterruptFrame *frame)
 {
-    Print(L"Exception %lu err=%lx\n", num, err);
-    (void)frame; while(1);
+    Phase38_Log(LOG_ERROR, L"CPU exception occurred");
+    (void)num; (void)err; (void)frame; while(1);
 }
 
 #define DECL_ISR(n) \
@@ -646,7 +656,7 @@ EFI_ACPI_DESCRIPTION_HEADER* Phase32_FindTable(EFI_SYSTEM_TABLE* SystemTable, ch
 {
     EFI_CONFIGURATION_TABLE *ct = SystemTable->ConfigurationTable;
     for (UINTN i=0;i<SystemTable->NumberOfTableEntries;i++) {
-        if (!CompareMem(&ct[i].VendorGuid, &gEfiAcpiTableGuid, sizeof(EFI_GUID))) {
+        if (CompareGuid(&ct[i].VendorGuid, &gEfiAcpiTableGuid)) {
             EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *rsdp = ct[i].VendorTable;
             EFI_ACPI_DESCRIPTION_HEADER *xsdt = (EFI_ACPI_DESCRIPTION_HEADER*)(UINTN)rsdp->XsdtAddress;
             UINT64 *entries = (UINT64*)((UINT8*)xsdt + sizeof(EFI_ACPI_DESCRIPTION_HEADER));
@@ -740,7 +750,7 @@ static uintptr_t vmm_base = 0xFFFF800000000000ULL;
 
 void *Phase40_Valloc(UINTN pages)
 {
-    for(UINTN i=0;i<VMM_MAX_PAGES;i++) {
+    for(UINTN i=0;i <= VMM_MAX_PAGES - pages;i++) {
         bool free=true;
         for(UINTN j=0;j<pages;j++) {
             if (vmm_bitmap[(i+j)/8] & (1<<((i+j)%8))) { free=false; break; }
@@ -794,13 +804,15 @@ static void vmm_map(uint64_t virt, uint64_t phys, uint64_t flags)
     uint64_t *pt  = get_table(pd, pd_i);
     if (!pt) return;
     pt[pt_i] = (phys & ~0xFFFULL) | (flags & 0xFFFULL);
+    if (!(flags & 0x100))
+        pt[pt_i] |= (1ULL << 63); // NX if bit 8 of flags is 0
 }
 
 /* Phase41_MapFramebuffer
  * Map the GOP frame buffer into the higher half of kernel virtual memory.
  */
 static UINT64 fb_virt_base = 0xFFFFC00000000000ULL;
-void Phase41_MapFramebuffer(EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop)
+void AiGfx_MapFramebuffer(EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop)
 {
     UINT64 phys = Gop->Mode->FrameBufferBase;
     UINTN  size = Gop->Mode->FrameBufferSize;
@@ -867,8 +879,8 @@ void Phase43_VfsInit(void)
 typedef uint64_t (*syscall_func_t)(uint64_t,uint64_t,uint64_t,uint64_t);
 static syscall_func_t syscall_table[16];
 
-static uint64_t Phase44_Dispatch(uint64_t num, uint64_t a1, uint64_t a2,
-                                 uint64_t a3, uint64_t a4)
+static uint64_t AiSyscall_Dispatch(uint64_t num, uint64_t a1, uint64_t a2,
+                                   uint64_t a3, uint64_t a4)
 {
     if (num < 16 && syscall_table[num])
         return syscall_table[num](a1, a2, a3, a4);
@@ -886,7 +898,7 @@ __attribute__((naked)) void Phase44_TrapStub(void)
         "mov 32(%rsp), %rcx;\n"
         "mov 24(%rsp), %r8;\n"
         "mov 16(%rsp), %r9;\n"
-        "call Phase44_Dispatch\n"
+        "call AiSyscall_Dispatch\n"
         "pop %rax; pop %r9; pop %r8; pop %rcx; pop %rdx; pop %rsi; pop %rdi;\n"
         "iretq\n");
 }
@@ -977,7 +989,7 @@ static process_t *proc_list = NULL;
 static process_t *current_proc = NULL;
 static uint32_t   next_pid = 1;
 
-process_t *Phase48_CreateProcess(void (*entry)(void))
+process_t *AiProc_Create(void (*entry)(void))
 {
     process_t *p = kmalloc(sizeof(process_t));
     if (!p) return NULL;
@@ -1074,7 +1086,7 @@ static INTN proc_status_read(vnode_t *n, void *buf, UINTN sz, UINTN off)
     return copy;
 }
 
-void Phase55_CreateProcEntry(process_t *p)
+void AiProcfs_CreateEntry(process_t *p)
 {
     vnode_t *dir = kmalloc(sizeof(vnode_t));
     str_copy(dir->name, "proc");
@@ -1094,15 +1106,15 @@ void Phase55_CreateProcEntry(process_t *p)
 /* Phase56 - minimal init process */
 void Phase56_InitProcess(void)
 {
-    process_t *init = Phase48_CreateProcess(NULL);
-    Phase55_CreateProcEntry(init);
+    process_t *init = AiProc_Create(NULL);
+    AiProcfs_CreateEntry(init);
     Print(L"Init process PID %u created\n", init->pid);
 }
 
 /* Phase57 - kfork syscall */
 static uint64_t sys_kfork(uint64_t, uint64_t, uint64_t, uint64_t)
 {
-    process_t *child = Phase48_CreateProcess(current_proc->entry);
+    process_t *child = AiProc_Create(current_proc->entry);
     if (!child) return (uint64_t)-1;
     return child->pid;
 }
@@ -1824,7 +1836,7 @@ static VOID Phase127_JournalWrite(CONST VOID *Buf, UINTN Size)
 static CHAR16 mHist[HIST_SIZE][64];
 static UINTN  mHistPos;
 
-static VOID Phase128_AddHistory(CONST CHAR16 *Cmd)
+static VOID AiShell_AddHistory(CONST CHAR16 *Cmd)
 {
     StrnCpy(mHist[mHistPos++ % HIST_SIZE], Cmd, 63);
 }
