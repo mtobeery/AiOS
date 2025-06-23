@@ -1,0 +1,4 @@
+AiOSKernel.efi
+kernel.elf
+run.log
+*.o
