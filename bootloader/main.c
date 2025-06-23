@@ -5,6 +5,9 @@
 #include <Library/MemoryAllocationLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/File.h>
 #include <Protocol/Tcg2Protocol.h>
@@ -333,4 +336,416 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     Phase10_JumpKernel(&Ehdr, &Params);
     return EFI_SUCCESS;
+}
+
+// ======================================================
+// Phases 21-40 kernel support functions
+
+// Forward declaration of kernel_main implemented elsewhere
+void kernel_main(void);
+
+/* Phase21_KernelEntry
+ * Entry point from bootloader. Setup stack, clear BSS and call kernel_main().
+ */
+__attribute__((naked)) void Phase21_KernelEntry(void)
+{
+    __asm__ __volatile__(
+        "lea 0x70000(%%rip), %%rsp\n"
+        "extern __bss_start\n"
+        "extern __bss_end\n"
+        "lea __bss_start(%%rip), %%rdi\n"
+        "lea __bss_end(%%rip), %%rcx\n"
+        "sub %%rdi, %%rcx\n"
+        "xor %%rax, %%rax\n"
+        "rep stosb\n"
+        "call kernel_main\n"
+        "cli\n"
+        "hlt\n");
+}
+
+/* Serial I/O for early logging */
+#define COM1_PORT 0x3F8
+static inline void outb(uint16_t port, uint8_t val) { __asm__ volatile("outb %0,%1"::"a"(val),"Nd"(port)); }
+static inline uint8_t inb(uint16_t port) { uint8_t v; __asm__ volatile("inb %1,%0":"=a"(v):"Nd"(port)); return v; }
+
+void Phase22_SerialInit(void)
+{
+    outb(COM1_PORT + 1, 0x00);
+    outb(COM1_PORT + 3, 0x80);
+    outb(COM1_PORT + 0, 0x03);
+    outb(COM1_PORT + 1, 0x00);
+    outb(COM1_PORT + 3, 0x03);
+    outb(COM1_PORT + 2, 0xC7);
+    outb(COM1_PORT + 4, 0x03);
+}
+
+static void serial_putc(char c)
+{
+    while (!(inb(COM1_PORT + 5) & 0x20));
+    outb(COM1_PORT, c);
+}
+
+/* GDT structures */
+struct GdtEntry {
+    uint16_t limit_low;
+    uint16_t base_low;
+    uint8_t  base_mid;
+    uint8_t  access;
+    uint8_t  gran;
+    uint8_t  base_hi;
+} __attribute__((packed));
+
+struct GdtPtr { uint16_t limit; uint64_t base; } __attribute__((packed));
+
+static struct GdtEntry gdt[3];
+static struct GdtPtr   gdtp;
+
+static void set_gdt_entry(int idx, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran)
+{
+    gdt[idx].limit_low = limit & 0xFFFF;
+    gdt[idx].base_low  = base & 0xFFFF;
+    gdt[idx].base_mid  = (base >> 16) & 0xFF;
+    gdt[idx].access    = access;
+    gdt[idx].gran      = (limit >> 16) & 0x0F;
+    gdt[idx].gran     |= gran & 0xF0;
+    gdt[idx].base_hi   = (base >> 24) & 0xFF;
+}
+
+void Phase23_GdtInit(void)
+{
+    set_gdt_entry(0, 0, 0, 0, 0);
+    set_gdt_entry(1, 0, 0xFFFFF, 0x9A, 0xA0);
+    set_gdt_entry(2, 0, 0xFFFFF, 0x92, 0xA0);
+    gdtp.limit = sizeof(gdt) - 1;
+    gdtp.base  = (uint64_t)gdt;
+    __asm__ volatile("lgdt %0" :: "m"(gdtp));
+    __asm__ volatile(
+        "mov $0x10, %%ds\n"
+        "mov $0x10, %%es\n"
+        "mov $0x10, %%ss\n"
+        "ljmp $0x08, $.1\n"
+        ".1:"
+        :::"memory");
+}
+
+/* IDT and ISR handling */
+struct IdtEntry {
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t  ist;
+    uint8_t  type;
+    uint16_t offset_mid;
+    uint32_t offset_hi;
+    uint32_t zero;
+} __attribute__((packed));
+
+struct IdtPtr { uint16_t limit; uint64_t base; } __attribute__((packed));
+
+static struct IdtEntry idt[256];
+static struct IdtPtr   idtp;
+
+typedef struct {
+    uint64_t rip; uint64_t cs; uint64_t rflags; uint64_t rsp; uint64_t ss;
+} __attribute__((packed)) InterruptFrame;
+
+void Phase25_IsrHandler(uint64_t num, uint64_t err, InterruptFrame *frame)
+{
+    Print(L"Exception %lu err=%lx\n", num, err);
+    (void)frame; while(1);
+}
+
+#define DECL_ISR(n) \
+__attribute__((naked)) void isr##n(void) { \
+    __asm__ __volatile__(\
+        "pushq $0\n" \
+        "pushq $"#n"\n" \
+        "jmp common_isr" ); }
+
+DECL_ISR(0); DECL_ISR(1); DECL_ISR(2); DECL_ISR(3); DECL_ISR(4); DECL_ISR(5); DECL_ISR(6); DECL_ISR(7); DECL_ISR(8); DECL_ISR(9); DECL_ISR(10); DECL_ISR(11); DECL_ISR(12); DECL_ISR(13); DECL_ISR(14); DECL_ISR(15); DECL_ISR(16); DECL_ISR(17); DECL_ISR(18); DECL_ISR(19); DECL_ISR(20); DECL_ISR(21); DECL_ISR(22); DECL_ISR(23); DECL_ISR(24); DECL_ISR(25); DECL_ISR(26); DECL_ISR(27); DECL_ISR(28); DECL_ISR(29); DECL_ISR(30); DECL_ISR(31);
+
+__attribute__((naked)) void common_isr(void)
+{
+    __asm__ __volatile__(
+        "pushaq\n"
+        "mov %rsp, %rdi\n"
+        "mov 8(%rsp), %rsi\n"
+        "mov 16(%rsp), %rdx\n"
+        "callq Phase25_IsrHandler\n"
+        "popaq\n"
+        "add $16, %rsp\n"
+        "iretq\n");
+}
+
+static void set_idt_gate(int num, void (*handler)(void))
+{
+    uint64_t addr = (uint64_t)handler;
+    idt[num].offset_low = addr & 0xFFFF;
+    idt[num].selector = 0x08;
+    idt[num].ist = 0;
+    idt[num].type = 0x8E;
+    idt[num].offset_mid = (addr >> 16) & 0xFFFF;
+    idt[num].offset_hi = addr >> 32;
+    idt[num].zero = 0;
+}
+
+void Phase24_IdtInit(void)
+{
+    for(int i=0;i<32;i++)
+        set_idt_gate(i, ((void(**)())isr0)[i]);
+    idtp.limit = sizeof(idt)-1;
+    idtp.base = (uint64_t)idt;
+    __asm__ volatile("lidt %0" :: "m"(idtp));
+}
+
+/* Paging structures */
+static uint64_t *pml4;
+
+void Phase26_EnablePaging(void)
+{
+    pml4 = AllocatePages(1);
+    SetMem(pml4, EFI_PAGE_SIZE, 0);
+    uint64_t *pdp = AllocatePages(1);
+    SetMem(pdp, EFI_PAGE_SIZE, 0);
+    uint64_t *pd  = AllocatePages(1);
+    SetMem(pd, EFI_PAGE_SIZE, 0);
+    uint64_t *pt  = AllocatePages(1);
+    SetMem(pt, EFI_PAGE_SIZE, 0);
+    pml4[0] = (uint64_t)pdp | 3;
+    pdp[0]  = (uint64_t)pd | 3;
+    for(int i=0;i<512;i++) pt[i] = (i*0x1000ULL) | 3;
+    pd[0] = (uint64_t)pt | 3;
+    __asm__ volatile("mov %0, %%cr3" :: "r"(pml4));
+}
+
+void Phase27_EnableWriteProtect(void)
+{
+    uint64_t cr0; __asm__ volatile("mov %%cr0,%0":"=r"(cr0));
+    cr0 |= (1<<16);
+    __asm__ volatile("mov %0, %%cr0"::"r"(cr0));
+}
+
+/* Simple bitmap page allocator */
+#define MAX_PAGES 1024
+static uint8_t pmm_bitmap[MAX_PAGES/8];
+static EFI_PHYSICAL_ADDRESS mem_base;
+
+static int bitmap_find_free(void)
+{
+    for (int i=0;i<MAX_PAGES;i++)
+        if (!(pmm_bitmap[i/8] & (1<<(i%8))))
+            return i;
+    return -1;
+}
+
+void Phase28_PmmInit(EFI_MEMORY_DESCRIPTOR *map, UINTN map_size, UINTN desc_size)
+{
+    for (UINTN i=0; i<map_size/desc_size; ++i) {
+        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)map + i*desc_size);
+        if (d->Type == EfiConventionalMemory) {
+            mem_base = d->PhysicalStart;
+            break;
+        }
+    }
+    SetMem(pmm_bitmap, sizeof(pmm_bitmap), 0);
+}
+
+void *pmm_alloc(void)
+{
+    int idx = bitmap_find_free();
+    if (idx<0) return NULL;
+    pmm_bitmap[idx/8] |= (1<<(idx%8));
+    return (void*)(mem_base + idx*4096ULL);
+}
+
+void pmm_free(void *p)
+{
+    UINTN idx = ((EFI_PHYSICAL_ADDRESS)p - mem_base)/4096ULL;
+    pmm_bitmap[idx/8] &= ~(1<<(idx%8));
+}
+
+/* Simple heap using linked list */
+typedef struct BlockHeader {
+    struct BlockHeader *next;
+    UINTN size;
+} BlockHeader;
+
+static BlockHeader *heap_head;
+
+void Phase29_HeapInit(void *heap_start, UINTN size)
+{
+    heap_head = (BlockHeader*)heap_start;
+    heap_head->next = NULL;
+    heap_head->size = size - sizeof(BlockHeader);
+}
+
+void *kmalloc(UINTN size)
+{
+    BlockHeader *cur = heap_head, *prev = NULL;
+    while (cur) {
+        if (cur->size >= size) {
+            if (cur->size <= size + sizeof(BlockHeader)) {
+                if (prev) prev->next = cur->next; else heap_head = cur->next;
+                return (cur+1);
+            } else {
+                BlockHeader *newb = (BlockHeader*)((UINT8*)(cur+1)+size);
+                newb->next = cur->next;
+                newb->size = cur->size - size - sizeof(BlockHeader);
+                if (prev) prev->next = newb; else heap_head = newb;
+                cur->size = size;
+                return (cur+1);
+            }
+        }
+        prev = cur; cur = cur->next;
+    }
+    return NULL;
+}
+
+void kfree(void *p)
+{
+    BlockHeader *b = (BlockHeader*)p - 1;
+    b->next = heap_head;
+    heap_head = b;
+}
+
+/* MADT parsing to count CPUs */
+UINTN Phase30_CountCpus(EFI_ACPI_DESCRIPTION_HEADER *madt)
+{
+    UINT8 *ptr = (UINT8*)madt + sizeof(EFI_ACPI_DESCRIPTION_HEADER);
+    UINT8 *end = (UINT8*)madt + madt->Length;
+    UINTN count = 0;
+    while (ptr < end) {
+        UINT8 type = ptr[0];
+        UINT8 len  = ptr[1];
+        if (type == 0)
+            count++;
+        ptr += len;
+    }
+    Print(L"Detected %u CPUs\n", count);
+    return count;
+}
+
+/* LAPIC setup */
+volatile uint32_t *lapic = (uint32_t*)0xFEE00000;
+
+void Phase31_InitLapic(void)
+{
+    lapic[0xF0/4] = 0x1FF;
+}
+
+/* ACPI table discovery */
+EFI_ACPI_DESCRIPTION_HEADER* Phase32_FindTable(EFI_SYSTEM_TABLE* SystemTable, char *sig)
+{
+    EFI_CONFIGURATION_TABLE *ct = SystemTable->ConfigurationTable;
+    for (UINTN i=0;i<SystemTable->NumberOfTableEntries;i++) {
+        if (!CompareMem(&ct[i].VendorGuid, &gEfiAcpiTableGuid, sizeof(EFI_GUID))) {
+            EFI_ACPI_2_0_ROOT_SYSTEM_DESCRIPTION_POINTER *rsdp = ct[i].VendorTable;
+            EFI_ACPI_DESCRIPTION_HEADER *xsdt = (EFI_ACPI_DESCRIPTION_HEADER*)(UINTN)rsdp->XsdtAddress;
+            UINT64 *entries = (UINT64*)((UINT8*)xsdt + sizeof(EFI_ACPI_DESCRIPTION_HEADER));
+            UINTN count = (xsdt->Length - sizeof(EFI_ACPI_DESCRIPTION_HEADER))/8;
+            for (UINTN j=0;j<count;j++) {
+                EFI_ACPI_DESCRIPTION_HEADER *h = (EFI_ACPI_DESCRIPTION_HEADER*)(UINTN)entries[j];
+                if (CompareMem(h->Signature, sig, 4)==0)
+                    return h;
+            }
+        }
+    }
+    return NULL;
+}
+
+void Phase33_EnableApicTimer(uint32_t ticks)
+{
+    lapic[0x3E0/4] = 0x3;
+    lapic[0x380/4] = ticks;
+    lapic[0x320/4] = 0x20;
+}
+
+static volatile UINT64 timer_ticks = 0;
+void Phase34_TimerHandler(uint64_t num, uint64_t err, InterruptFrame *f)
+{
+    timer_ticks++;
+    if (!(timer_ticks % 100))
+        Print(L"Ticks: %lu\n", timer_ticks);
+    lapic[0xB0/4] = 0;
+    (void)num; (void)err; (void)f;
+}
+
+/* SMP startup */
+void Phase35_StartAPs(UINT8 *lapic_ids, UINTN count, void *trampoline)
+{
+    for (UINTN i=1;i<count;i++) {
+        lapic[0x280/4] = lapic_ids[i]<<24;
+        lapic[0x300/4] = 0x4500;
+        for(volatile int d=0; d<100000; d++);
+        lapic[0x280/4] = lapic_ids[i]<<24;
+        lapic[0x300/4] = 0x4600 | ((UINT64)trampoline>>12);
+        for(volatile int d=0; d<100000; d++);
+    }
+}
+
+/* Trampoline setup */
+void Phase36_SetupTrampoline(void *trampoline, void *entry)
+{
+    UINT8 *code = (UINT8*)trampoline;
+    code[0] = 0xEA;
+    *(uint32_t*)&code[1] = (uint32_t)(uint64_t)entry;
+    *(uint16_t*)&code[5] = 0;
+}
+
+/* Spinlock */
+typedef struct { volatile uint32_t v; } spinlock_t;
+void Phase37_Lock(spinlock_t *l)
+{
+    while (__sync_lock_test_and_set(&l->v,1)) while(l->v);
+}
+void Phase37_Unlock(spinlock_t *l)
+{
+    __sync_lock_release(&l->v);
+}
+
+/* Logging */
+typedef enum {LOG_INFO, LOG_WARN, LOG_ERROR} log_level_t;
+
+void Phase38_Log(log_level_t lvl, const CHAR16 *msg)
+{
+    static const CHAR16 *prefix[] = {L"INFO: ", L"WARN: ", L"ERROR: "};
+    for(const CHAR16 *p=prefix[lvl]; *p; ++p) serial_putc(*p);
+    for(const CHAR16 *p=msg; *p; ++p) serial_putc(*p);
+    serial_putc('\n');
+}
+
+/* Panic handling */
+void Phase39_Panic(const CHAR16 *msg, uint64_t *rbp)
+{
+    Print(L"PANIC: %s\n", msg);
+    while (rbp) {
+        Print(L"%lx\n", rbp[1]);
+        rbp = (uint64_t*)rbp[0];
+    }
+    while(1);
+}
+
+/* Virtual memory allocator using simple bitmap */
+#define VMM_MAX_PAGES 512
+static uint8_t vmm_bitmap[VMM_MAX_PAGES/8];
+static uintptr_t vmm_base = 0xFFFF800000000000ULL;
+
+void *Phase40_Valloc(UINTN pages)
+{
+    for(UINTN i=0;i<VMM_MAX_PAGES;i++) {
+        bool free=true;
+        for(UINTN j=0;j<pages;j++) {
+            if (vmm_bitmap[(i+j)/8] & (1<<((i+j)%8))) { free=false; break; }
+        }
+        if (free) {
+            for(UINTN j=0;j<pages;j++) vmm_bitmap[(i+j)/8] |= 1<<((i+j)%8);
+            return (void*)(vmm_base + i*0x1000ULL);
+        }
+    }
+    return NULL;
+}
+
+void Phase40_Vfree(void *ptr, UINTN pages)
+{
+    UINTN idx = ((uintptr_t)ptr - vmm_base)/0x1000ULL;
+    for(UINTN j=0;j<pages;j++) vmm_bitmap[(idx+j)/8] &= ~(1<<((idx+j)%8));
 }
