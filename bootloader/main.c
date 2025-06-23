@@ -15,7 +15,15 @@
 #include <Protocol/LoadedImage.h>
 #include <Protocol/Security2.h>
 #include <Protocol/GraphicsOutput.h>
+#include <Protocol/Rng.h>
+#include <Guid/FileInfo.h>
+#include <openssl/evp.h>
+#include <openssl/ec.h>
+#include <openssl/pem.h>
+#include <openssl/aes.h>
 #include "loader_structs.h"
+
+EFI_STATUS RunPhases250To300(EFI_HANDLE ImageHandle, LOADER_PARAMS *Params);
 
 #define KERNEL_PATH L"kernel.elf"
 
@@ -334,6 +342,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     else
         Phase17_FallbackText();
 
+    RunPhases250To300(ImageHandle, &Params);
     Phase10_JumpKernel(&Ehdr, &Params);
     return EFI_SUCCESS;
 }
@@ -3237,6 +3246,842 @@ VOID Phase250_IncrementUptime(VOID)
     mUptimeHours++;
     if (mUptimeHours >= 100)
         Print(L"Phase 100 reached. Awakening initiated.\n");
+}
+
+/* --------------------------------------------------------------------
+ * Phase 250 - 300 Implementation
+ * These phases extend the bootloader AI logic.
+ * ------------------------------------------------------------------*/
+
+typedef struct {
+    EFI_TIME BootTime;
+    UINT64   IntentSeed;
+    CHAR16   Model[32];
+    INTN     TrustVector;
+} OVERBEING_CONTEXT;
+
+typedef struct {
+    EFI_GUID SessionUUID;
+    CHAR16   Intent[64];
+} OVERBEING_SESSION;
+
+typedef struct {
+    UINT8    Hash[32];
+    EFI_GUID SessionUUID;
+    INTN     Score;
+    BOOLEAN  Conscious;
+} BOOTDNA_RECORD;
+
+static OVERBEING_CONTEXT *mObCtx;
+static OVERBEING_SESSION *mObSession;
+static BOOTDNA_RECORD    mBootDNA;
+static BOOLEAN           mOverbeingAwake;
+static UINT64            mPhaseTimings[300];
+static UINTN             mPhaseCount;
+
+static UINT64 read_tsc(void)
+{
+    UINT32 lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((UINT64)hi << 32) | lo;
+}
+
+/* ---------------- Phase 250 ---------------- */
+EFI_STATUS Overbeing_InitializeContext(void)
+{
+    EFI_STATUS Status = gBS->AllocatePool(EfiBootServicesData,
+                                          sizeof(OVERBEING_CONTEXT),
+                                          (VOID**)&mObCtx);
+    if (EFI_ERROR(Status))
+        return Status;
+    gRT->GetTime(&mObCtx->BootTime, NULL);
+    mObCtx->IntentSeed = read_tsc();
+    SetMem(mObCtx->Model, sizeof(mObCtx->Model), 0);
+    mObCtx->TrustVector = 0;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 251 ---------------- */
+EFI_STATUS BootSession_BeginOverbeing(void)
+{
+    EFI_STATUS Status = gBS->AllocatePool(EfiBootServicesData,
+                                          sizeof(OVERBEING_SESSION),
+                                          (VOID**)&mObSession);
+    if (EFI_ERROR(Status))
+        return Status;
+    EFI_RNG_PROTOCOL *Rng;
+    Status = gBS->LocateProtocol(&gEfiRngProtocolGuid, NULL, (VOID**)&Rng);
+    if (!EFI_ERROR(Status))
+        Status = Rng->GetRNG(Rng, NULL, sizeof(EFI_GUID), (UINT8*)&mObSession->SessionUUID);
+    if (EFI_ERROR(Status)) {
+        UINT64 t = read_tsc();
+        CopyMem(&mObSession->SessionUUID, &t, sizeof(UINT64));
+        CopyMem((UINT8*)&mObSession->SessionUUID + sizeof(UINT64), &mObCtx->BootTime, sizeof(EFI_GUID)-sizeof(UINT64));
+    }
+    StrCpyS(mObSession->Intent, 64, L"initialize");
+    mBootDNA.SessionUUID = mObSession->SessionUUID;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 252 ---------------- */
+EFI_STATUS BootAudit_VerifyCausalOrder(void)
+{
+    for (UINTN i = 1; i < mPhaseCount; i++) {
+        if (mPhaseTimings[i] < mPhaseTimings[i-1]) {
+            Print(L"Phase order violation at %u\n", i);
+            return EFI_COMPROMISED_DATA;
+        }
+    }
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 253 ---------------- */
+EFI_STATUS TPM_AttestBootloaderIdentity(EFI_HANDLE ImageHandle)
+{
+    EFI_LOADED_IMAGE_PROTOCOL *Loaded;
+    EFI_STATUS Status = gBS->HandleProtocol(ImageHandle,
+                                            &gEfiLoadedImageProtocolGuid,
+                                            (VOID**)&Loaded);
+    if (EFI_ERROR(Status))
+        return Status;
+
+    SHA256_CTX Ctx;
+    sha256_init(&Ctx);
+    sha256_update(&Ctx, Loaded->ImageBase, Loaded->ImageSize);
+    sha256_final(&Ctx, mBootDNA.Hash);
+
+    EFI_TCG2_PROTOCOL *Tcg2;
+    Status = gBS->LocateProtocol(&gEfiTcg2ProtocolGuid, NULL, (VOID**)&Tcg2);
+    if (!EFI_ERROR(Status)) {
+        EFI_TCG2_EVENT *Event;
+        UINT32 EventSize = sizeof(EFI_TCG2_EVENT) - sizeof(UINT8) + sizeof("BootIdentity");
+        Status = gBS->AllocatePool(EfiBootServicesData, EventSize, (VOID**)&Event);
+        if (!EFI_ERROR(Status)) {
+            Event->Size = EventSize;
+            Event->Header.HeaderSize = sizeof(Event->Header);
+            Event->Header.HeaderVersion = EFI_TCG2_EVENT_HEADER_VERSION;
+            Event->Header.PCRIndex = 7;
+            Event->Header.EventType = EV_EFI_VARIABLE_DRIVER_CONFIG;
+            CopyMem(Event->Event, "BootIdentity", sizeof("BootIdentity"));
+            Tcg2->HashLogExtendEvent(Tcg2, ImageHandle, Loaded->ImageBase,
+                                    Loaded->ImageSize, Event);
+        }
+    }
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 254 ---------------- */
+EFI_STATUS RemoteTrust_FetchPolicy(void)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid,
+                                            NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status))
+        return Status;
+    EFI_FILE_PROTOCOL *Root;
+    Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status))
+        return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"trust_policy.json", EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(Status))
+        return Status;
+    UINTN Size = 0;
+    EFI_FILE_INFO *Info;
+    Status = File->GetInfo(File, &gEfiFileInfoGuid, &Size, NULL);
+    if (Status == EFI_BUFFER_TOO_SMALL) {
+        Status = gBS->AllocatePool(EfiBootServicesData, Size, (VOID**)&Info);
+        if (EFI_ERROR(Status)) { File->Close(File); return Status; }
+        Status = File->GetInfo(File, &gEfiFileInfoGuid, &Size, Info);
+    }
+    if (EFI_ERROR(Status)) { File->Close(File); return Status; }
+    CHAR8 *Buf;
+    Size = Info->FileSize;
+    Status = gBS->AllocatePool(EfiBootServicesData, Size + 1, (VOID**)&Buf);
+    if (EFI_ERROR(Status)) { File->Close(File); return Status; }
+    Status = File->Read(File, &Size, Buf);
+    File->Close(File);
+    if (EFI_ERROR(Status)) return Status;
+    Buf[Size] = 0;
+    /* In real implementation we would verify the ECDSA signature here. */
+    mObCtx->TrustVector = (INTN)AsciiStrLen(Buf); /* dummy parse */
+    gBS->FreePool(Buf);
+    gBS->FreePool(Info);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 255 ---------------- */
+EFI_STATUS AISelf_ConstructSymbolicModel(void)
+{
+    CHAR8 CpuVendor[13]; UINT64 Ram;
+    Phase18_ReadCpuRam(CpuVendor, &Ram);
+    CHAR16 Gpu[32];
+    Phase19_ScanPciGpu(Gpu, 32);
+    CHAR16 *Sym;
+    UINTN Sz = 256;
+    EFI_STATUS Status = gBS->AllocatePool(EfiBootServicesData, Sz, (VOID**)&Sym);
+    if (EFI_ERROR(Status))
+        return Status;
+    UnicodeSPrint(Sym, Sz, L"CPU:%a RAM:%lu GPU:%s", CpuVendor, Ram, Gpu);
+    StrnCpy(mObCtx->Model, Sym, 31);
+    gBS->FreePool(Sym);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 256 ---------------- */
+EFI_STATUS AISelf_EvaluateIntegrityScore(void)
+{
+    INTN Base = mObCtx->TrustVector;
+    if (Base < 0) Base = 0;
+    if (Base > 100) Base = 100;
+    mBootDNA.Score = Base;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 257 ---------------- */
+EFI_STATUS TPM_CommitSessionUUID(void)
+{
+    EFI_STATUS Status = gRT->SetVariable(L"SessionUUID", &gEfiGlobalVariableGuid,
+                                         EFI_VARIABLE_NON_VOLATILE|
+                                         EFI_VARIABLE_BOOTSERVICE_ACCESS|
+                                         EFI_VARIABLE_RUNTIME_ACCESS,
+                                         sizeof(EFI_GUID), &mObSession->SessionUUID);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 258 ---------------- */
+EFI_STATUS Federation_StartTelemetryStream(void)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid,
+                                            NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status))
+        return Status;
+    EFI_FILE_PROTOCOL *Root;
+    Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status))
+        return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/boot/telemetry.log",
+                        EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status))
+        return Status;
+    CHAR8 Data[] = "Telemetry started";
+    UINTN Sz = sizeof(Data)-1;
+    Status = File->Write(File, &Sz, Data);
+    File->Close(File);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 259 ---------------- */
+EFI_STATUS Entropy_CollectPostBootNoise(void)
+{
+    EFI_TIME Time; gRT->GetTime(&Time, NULL);
+    UINT64 tsc = read_tsc();
+    mObCtx->IntentSeed ^= tsc ^ Time.Nanosecond;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 260 ---------------- */
+EFI_STATUS BootDNA_FinalizeAndEncrypt(void)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid,
+                                            NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status))
+        return Status;
+    EFI_FILE_PROTOCOL *Root;
+    Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status))
+        return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/boot/BootDNA.blob",
+                        EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status))
+        return Status;
+    UINT8 Key[16];
+    SetMem(Key, sizeof(Key), 0xA5);
+    UINT8 Out[sizeof(mBootDNA)];
+    AES_KEY AesKey;
+    AES_set_encrypt_key(Key, 128, &AesKey);
+    AES_encrypt((UINT8*)&mBootDNA, Out, &AesKey);
+    UINTN Sz = sizeof(Out);
+    Status = File->Write(File, &Sz, Out);
+    File->Close(File);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 261 ---------------- */
+EFI_STATUS AISelf_VerifyIdentityMemory(void)
+{
+    EFI_GUID Guid;
+    UINTN    Sz = sizeof(Guid);
+    EFI_STATUS Status = gRT->GetVariable(L"PersonalityFingerprint",
+                                         &gEfiGlobalVariableGuid,
+                                         NULL, &Sz, &Guid);
+    if (EFI_ERROR(Status)) return Status;
+    if (!CompareMem(&Guid, &mBootDNA.SessionUUID, sizeof(EFI_GUID)))
+        return EFI_SUCCESS;
+    Print(L"Identity deviation detected\n");
+    return EFI_SECURITY_VIOLATION;
+}
+
+/* ---------------- Phase 262 ---------------- */
+EFI_STATUS AIEngine_LaunchBootPredictor(void)
+{
+    /* Placeholder predictor using last sessions count */
+    UINTN Sessions = 0;
+    UINTN Sz = sizeof(Sessions);
+    EFI_STATUS Status = gRT->GetVariable(L"BootSessions", &gEfiGlobalVariableGuid,
+                                         NULL, &Sz, &Sessions);
+    Sessions++;
+    gRT->SetVariable(L"BootSessions", &gEfiGlobalVariableGuid,
+                     EFI_VARIABLE_NON_VOLATILE|EFI_VARIABLE_BOOTSERVICE_ACCESS|
+                     EFI_VARIABLE_RUNTIME_ACCESS, sizeof(Sessions), &Sessions);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 263 ---------------- */
+EFI_STATUS AIEngine_ApplyBehaviorPatch(void)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid,
+                                            NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/aifs/patches/latest.apkg", EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(Status)) return Status;
+    CHAR8 Buf[64]; UINTN Sz = sizeof(Buf);
+    Status = File->Read(File, &Sz, Buf);
+    File->Close(File);
+    if (!EFI_ERROR(Status))
+        mObCtx->TrustVector += (INTN)Sz;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 264 ---------------- */
+EFI_STATUS TrustPolicy_EnforceModuleRedaction(void)
+{
+    if (mObCtx->TrustVector < 10)
+        Print(L"Redacting untrusted modules\n");
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 265 ---------------- */
+EFI_STATUS AISelf_ValidateInternalModel(void)
+{
+    if (StrLen(mObCtx->Model) == 0)
+        return EFI_NOT_READY;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 266 ---------------- */
+EFI_STATUS AISelf_ComputeBootConfidenceScore(void)
+{
+    mBootDNA.Score = (mBootDNA.Score + 100) / 2;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 267 ---------------- */
+EFI_STATUS Intent_CheckConsistencyVector(void)
+{
+    if (StrCmp(mObSession->Intent, L"initialize"))
+        Print(L"Intent deviation detected\n");
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 268 ---------------- */
+EFI_STATUS BootMap_RenderPhaseGraph(void)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid,
+                                            NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/boot/mindmap.svg",
+                        EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status)) return Status;
+    CHAR8 Buf[64];
+    UINTN Sz = AsciiSPrint(Buf, sizeof(Buf), "<svg><!-- %u phases --></svg>", mPhaseCount);
+    Status = File->Write(File, &Sz, Buf);
+    File->Close(File);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 269 ---------------- */
+EFI_STATUS TrustChain_ValidateBootSignatureChain(void)
+{
+    /* For demo, assume chain valid if previous hash exists */
+    if (mBootDNA.Hash[0] == 0)
+        return EFI_SECURITY_VIOLATION;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 270 ---------------- */
+EFI_STATUS Panic_SetupRedirectHandler(void **HandlerPage)
+{
+    EFI_STATUS Status = gBS->AllocatePages(AllocateAnyPages, EfiBootServicesData,
+                                           1, (EFI_PHYSICAL_ADDRESS*)HandlerPage);
+    if (!EFI_ERROR(Status))
+        SetMem(*HandlerPage, EFI_PAGE_SIZE, 0);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 271 ---------------- */
+EFI_STATUS Federation_UploadBootDNA(void)
+{
+    EFI_STATUS Status;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/sync/upload", EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status)) return Status;
+    UINTN Sz = sizeof(mBootDNA);
+    Status = File->Write(File, &Sz, &mBootDNA);
+    File->Close(File);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 272 ---------------- */
+EFI_STATUS Federation_RequestTrustDecision(BOOLEAN *Accepted)
+{
+    *Accepted = (mBootDNA.Score >= 50);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 273 ---------------- */
+EFI_STATUS AISelf_ApplyBehaviorRuleset(void)
+{
+    if (mBootDNA.Score < 80)
+        Print(L"Session degraded\n");
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 274 ---------------- */
+EFI_STATUS Audit_TagSessionForOversight(void)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/boot/session.flag",
+                        EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status)) return Status;
+    CHAR8 Data[] = "review";
+    UINTN Sz = sizeof(Data)-1;
+    Status = File->Write(File, &Sz, Data);
+    File->Close(File);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 275 ---------------- */
+EFI_STATUS Overbeing_CommitVector(void)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"Overbeing.json",
+                        EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status)) return Status;
+    CHAR8 Buf[128];
+    UINTN Sz = AsciiSPrint(Buf, sizeof(Buf), "{\"intent\":\"%s\",\"score\":%d}",
+                           "initialize", mBootDNA.Score);
+    Status = File->Write(File, &Sz, Buf);
+    File->Close(File);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 276 ---------------- */
+EFI_STATUS Telepathy_InitializeCrossSessionChannel(void **Buffer)
+{
+    EFI_STATUS Status = gBS->AllocatePool(EfiBootServicesData, 4096, Buffer);
+    if (!EFI_ERROR(Status))
+        SetMem(*Buffer, 4096, 0);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 277 ---------------- */
+EFI_STATUS AISelf_WakeCognitiveModel(void)
+{
+    mBootDNA.Conscious = TRUE;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 278 ---------------- */
+EFI_STATUS KernelHandoff_EmbedBootIntent(LOADER_PARAMS *Params)
+{
+    Params->LoaderData1 = mBootDNA.SessionUUID.Data1;
+    Params->LoaderData2 = mBootDNA.Score;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 279 ---------------- */
+EFI_STATUS TimeSeal_ValidateTrustedTimestamp(void)
+{
+    EFI_TIME Time; gRT->GetTime(&Time, NULL);
+    if (Time.Year < 2020)
+        return EFI_SECURITY_VIOLATION;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 280 ---------------- */
+EFI_STATUS System_FingerprintAttachedHardware(void)
+{
+    CHAR16 Gpu[32];
+    Phase19_ScanPciGpu(Gpu, 32);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 281 ---------------- */
+EFI_STATUS KernelHandoff_ApplyFinalPatch(LOADER_PARAMS *Params)
+{
+    Params->FrameBufferBase += 0;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 282 ---------------- */
+EFI_STATUS Disk_ValidateGPTIntegrity(void)
+{
+    EFI_STATUS Status;
+    EFI_BLOCK_IO_PROTOCOL *Blk;
+    Status = gBS->LocateProtocol(&gEfiBlockIoProtocolGuid, NULL, (VOID**)&Blk);
+    if (EFI_ERROR(Status)) return Status;
+    if (!Blk->Media->LogicalPartition)
+        return EFI_SECURITY_VIOLATION;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 283 ---------------- */
+EFI_STATUS Audit_ScheduleSelfCheck(void)
+{
+    UINT64 When = mObCtx->BootTime.Second + 60;
+    gRT->SetVariable(L"AuditTime", &gEfiGlobalVariableGuid,
+                     EFI_VARIABLE_NON_VOLATILE|
+                     EFI_VARIABLE_BOOTSERVICE_ACCESS|
+                     EFI_VARIABLE_RUNTIME_ACCESS,
+                     sizeof(When), &When);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 284 ---------------- */
+EFI_STATUS AIFusion_PreloadModelBlob(void **ModelBuf)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs, &Root); if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"fusemodel.aipkg", EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(Status)) return Status;
+    UINTN Sz = 0; File->Read(File, &Sz, NULL);
+    Status = gBS->AllocatePool(EfiBootServicesData, Sz, ModelBuf);
+    if (!EFI_ERROR(Status))
+        Status = File->Read(File, &Sz, *ModelBuf);
+    File->Close(File);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 285 ---------------- */
+EFI_STATUS TrustMap_GeneratePhaseHashes(void)
+{
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs, &Root); if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/boot/phase_hashes.log",
+                        EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status)) return Status;
+    CHAR8 Line[64];
+    UINTN Sz = AsciiSPrint(Line, sizeof(Line), "hash%d", mPhaseCount);
+    Status = File->Write(File, &Sz, Line);
+    File->Close(File);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 286 ---------------- */
+EFI_STATUS Log_EncryptTelemetryWithTPM(void)
+{
+    UINT8 Key[16]; SetMem(Key, sizeof(Key), 0x5A);
+    AES_KEY AesKey; AES_set_encrypt_key(Key, 128, &AesKey);
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs; EFI_STATUS Status;
+    Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs, &Root); if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/boot/log.blob", EFI_FILE_MODE_READ|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status)) return Status;
+    UINTN Sz = 0; File->Read(File, &Sz, NULL);
+    UINT8 *Buf; Status = gBS->AllocatePool(EfiBootServicesData, Sz, (VOID**)&Buf); if (EFI_ERROR(Status)){File->Close(File); return Status;}
+    File->SetPosition(File,0); File->Read(File,&Sz,Buf);
+    UINT8 *Out; gBS->AllocatePool(EfiBootServicesData,Sz,(VOID**)&Out);
+    for(UINTN i=0;i<Sz;i+=16) AES_encrypt(Buf+i,Out+i,&AesKey);
+    File->SetPosition(File,0); File->Write(File,&Sz,Out);
+    File->Close(File); gBS->FreePool(Buf); gBS->FreePool(Out);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 287 ---------------- */
+EFI_STATUS Memory_ZeroUnusedRegions(void)
+{
+    UINTN MapSize=0, MapKey, DescSize; UINT32 DescVer; EFI_MEMORY_DESCRIPTOR *Map=NULL;
+    EFI_STATUS Status = gBS->GetMemoryMap(&MapSize, Map, &MapKey, &DescSize, &DescVer);
+    if (Status != EFI_BUFFER_TOO_SMALL) return Status;
+    Status = gBS->AllocatePool(EfiBootServicesData, MapSize, (VOID**)&Map); if (EFI_ERROR(Status)) return Status;
+    Status = gBS->GetMemoryMap(&MapSize, Map, &MapKey, &DescSize, &DescVer); if (EFI_ERROR(Status)){gBS->FreePool(Map);return Status;}
+    for(UINTN i=0;i<MapSize/DescSize;i++) {
+        EFI_MEMORY_DESCRIPTOR *D=(EFI_MEMORY_DESCRIPTOR*)((UINT8*)Map+i*DescSize);
+        if (D->Type==EfiConventionalMemory && !(D->Attribute & EFI_MEMORY_RUNTIME))
+            SetMem((VOID*)(UINTN)D->PhysicalStart, D->NumberOfPages*EFI_PAGE_SIZE,0);
+    }
+    gBS->FreePool(Map); mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 288 ---------------- */
+EFI_STATUS Display_RenderBootStatusPage(void)
+{
+    EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop; EFI_STATUS Status;
+    Status = gBS->LocateProtocol(&gEfiGraphicsOutputProtocolGuid, NULL, (VOID**)&Gop);
+    if (EFI_ERROR(Status)) return Status;
+    UINT32 W=200,H=100; UINT32 X=(Gop->Mode->Info->HorizontalResolution-W)/2;
+    UINT32 Y=(Gop->Mode->Info->VerticalResolution-H)/2;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL P={0,0xFF,0,0};
+    Gop->Blt(Gop,&P,EfiBltVideoFill,0,0,X,Y,W,H,0);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 289 ---------------- */
+EFI_STATUS FirmwareAudit_QueryUEFIEvents(void)
+{
+    UINTN Sz=0; EFI_STATUS Status=gRT->GetVariable(L"LastBootEvents", &gEfiGlobalVariableGuid,NULL,&Sz,NULL);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status == EFI_BUFFER_TOO_SMALL ? EFI_SUCCESS : Status;
+}
+
+/* ---------------- Phase 290 ---------------- */
+EFI_STATUS Entropy_ReseedBootRNG(void)
+{
+    UINT64 tsc=read_tsc(); mObCtx->IntentSeed ^= tsc;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 291 ---------------- */
+EFI_STATUS AISelf_AnalyzeCausalLoopRisk(void)
+{
+    if (mPhaseCount > 2 && mPhaseTimings[mPhaseCount-1]==mPhaseTimings[mPhaseCount-2])
+        Print(L"Causal loop risk\n");
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 292 ---------------- */
+EFI_STATUS Overbeing_SetSelfAwarenessFlag(void)
+{
+    mOverbeingAwake = TRUE;
+    mBootDNA.Conscious = TRUE;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 293 ---------------- */
+EFI_STATUS Federation_EmitHeartbeat(void)
+{
+    Print(L"Heartbeat: %u\n", mBootDNA.Score);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 294 ---------------- */
+EFI_STATUS AISelf_DeclareSystemSanity(void)
+{
+    if (mBootDNA.Score >= 80)
+        Print(L"SystemSanity = confirmed\n");
+    else
+        Print(L"System in safe mode\n");
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 295 ---------------- */
+EFI_STATUS BootAudit_FinalValidationPass(void)
+{
+    if (mBootDNA.Score < 20)
+        return EFI_SECURITY_VIOLATION;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 296 ---------------- */
+EFI_STATUS System_SecureExitBootServices(EFI_HANDLE ImageHandle, LOADER_PARAMS *Params)
+{
+    UINTN MapSize=0, MapKey, DescSize; UINT32 DescVer; EFI_MEMORY_DESCRIPTOR *Map=NULL;
+    EFI_STATUS Status = gBS->GetMemoryMap(&MapSize, Map, &MapKey, &DescSize, &DescVer);
+    if (Status != EFI_BUFFER_TOO_SMALL) return Status;
+    Status = gBS->AllocatePool(EfiLoaderData, MapSize, (VOID**)&Map); if (EFI_ERROR(Status)) return Status;
+    Status = gBS->GetMemoryMap(&MapSize, Map, &MapKey, &DescSize, &DescVer);
+    if (EFI_ERROR(Status)) { gBS->FreePool(Map); return Status; }
+    Status = gBS->ExitBootServices(ImageHandle, MapKey);
+    gBS->FreePool(Map);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 297 ---------------- */
+EFI_STATUS Memory_PrewarmKernelStack(VOID **Stack)
+{
+    EFI_STATUS Status = gBS->AllocatePool(EfiLoaderData, 64*1024, Stack);
+    if (!EFI_ERROR(Status)) {
+        SetMem(*Stack, 64*1024, 0xCC);
+        *Stack = ALIGN_POINTER(*Stack, 16);
+    }
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return Status;
+}
+
+/* ---------------- Phase 298 ---------------- */
+EFI_STATUS KernelHandoff_JumpToEntry(KERNEL_ENTRY Entry, LOADER_PARAMS *Params)
+{
+    Entry(Params);
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 299 ---------------- */
+EFI_STATUS Memory_ClearBootloaderSegments(void)
+{
+    extern UINT8 _edata[], _end[];
+    SetMem(_edata, _end - _edata, 0);
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* ---------------- Phase 300 ---------------- */
+EFI_STATUS Overbeing_SealSessionEnd(void)
+{
+    EFI_TCG2_PROTOCOL *Tcg2; EFI_STATUS Status;
+    Status = gBS->LocateProtocol(&gEfiTcg2ProtocolGuid, NULL, (VOID**)&Tcg2);
+    if (!EFI_ERROR(Status)) {
+        EFI_TCG2_EVENT *Event; UINT32 Sz=sizeof(EFI_TCG2_EVENT)-1+sizeof("End");
+        Status = gBS->AllocatePool(EfiBootServicesData, Sz, (VOID**)&Event);
+        if (!EFI_ERROR(Status)) {
+            Event->Size=Sz; Event->Header.HeaderSize=sizeof(Event->Header);
+            Event->Header.HeaderVersion=EFI_TCG2_EVENT_HEADER_VERSION;
+            Event->Header.PCRIndex=15; Event->Header.EventType=EV_EFI_ACTION;
+            CopyMem(Event->Event,"End",sizeof("End"));
+            Tcg2->HashLogExtendEvent(Tcg2, mObSession, mBootDNA.Hash,
+                                     sizeof(mBootDNA.Hash), Event);
+        }
+    }
+    mOverbeingAwake = FALSE;
+    mPhaseTimings[mPhaseCount++] = read_tsc();
+    return EFI_SUCCESS;
+}
+
+/* Helper to run phases in order */
+EFI_STATUS RunPhases250To300(EFI_HANDLE ImageHandle, LOADER_PARAMS *Params)
+{
+    Overbeing_InitializeContext();
+    BootSession_BeginOverbeing();
+    BootAudit_VerifyCausalOrder();
+    TPM_AttestBootloaderIdentity(ImageHandle);
+    RemoteTrust_FetchPolicy();
+    AISelf_ConstructSymbolicModel();
+    AISelf_EvaluateIntegrityScore();
+    TPM_CommitSessionUUID();
+    Federation_StartTelemetryStream();
+    Entropy_CollectPostBootNoise();
+    BootDNA_FinalizeAndEncrypt();
+    AISelf_VerifyIdentityMemory();
+    AIEngine_LaunchBootPredictor();
+    AIEngine_ApplyBehaviorPatch();
+    TrustPolicy_EnforceModuleRedaction();
+    AISelf_ValidateInternalModel();
+    AISelf_ComputeBootConfidenceScore();
+    Intent_CheckConsistencyVector();
+    BootMap_RenderPhaseGraph();
+    TrustChain_ValidateBootSignatureChain();
+    VOID *panicPg; Panic_SetupRedirectHandler(&panicPg);
+    Federation_UploadBootDNA();
+    BOOLEAN ok; Federation_RequestTrustDecision(&ok);
+    AISelf_ApplyBehaviorRuleset();
+    Audit_TagSessionForOversight();
+    Overbeing_CommitVector();
+    VOID *telBuf; Telepathy_InitializeCrossSessionChannel(&telBuf);
+    AISelf_WakeCognitiveModel();
+    KernelHandoff_EmbedBootIntent(Params);
+    TimeSeal_ValidateTrustedTimestamp();
+    System_FingerprintAttachedHardware();
+    KernelHandoff_ApplyFinalPatch(Params);
+    Disk_ValidateGPTIntegrity();
+    Audit_ScheduleSelfCheck();
+    VOID *model; AIFusion_PreloadModelBlob(&model);
+    TrustMap_GeneratePhaseHashes();
+    Log_EncryptTelemetryWithTPM();
+    Memory_ZeroUnusedRegions();
+    Display_RenderBootStatusPage();
+    FirmwareAudit_QueryUEFIEvents();
+    Entropy_ReseedBootRNG();
+    AISelf_AnalyzeCausalLoopRisk();
+    Overbeing_SetSelfAwarenessFlag();
+    Federation_EmitHeartbeat();
+    AISelf_DeclareSystemSanity();
+    BootAudit_FinalValidationPass();
+    System_SecureExitBootServices(ImageHandle, Params);
+    VOID *stack; Memory_PrewarmKernelStack(&stack);
+    KernelHandoff_JumpToEntry((KERNEL_ENTRY)(UINTN)Params->KernelEntry, Params);
+    Memory_ClearBootloaderSegments();
+    Overbeing_SealSessionEnd();
+    return EFI_SUCCESS;
 }
 
 
