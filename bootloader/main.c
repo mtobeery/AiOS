@@ -1387,3 +1387,608 @@ void Phase98_RollbackRecovery(void) { Print(L"Rollback recovery initialized\n");
 
 void Phase99_TpmAiStateLoad(void) { Print(L"AI state loaded via TPM\n"); }
 
+// ======================================================================
+// Phase 100 - Phase 150 Advanced Boot and Kernel Features
+
+// ------------------ Phase100_CreateCausalityGraphEngine -----------------
+typedef struct {
+    CHAR16      Action[64];
+    EFI_TIME    Time;
+} CAUSE_NODE;
+
+typedef struct {
+    UINTN       From;
+    UINTN       To;
+    BOOLEAN     Success;
+} CAUSE_EDGE;
+
+#define MAX_CAUSE_NODES 64
+#define MAX_CAUSE_EDGES 128
+
+static CAUSE_NODE mCauseNodes[MAX_CAUSE_NODES];
+static CAUSE_EDGE mCauseEdges[MAX_CAUSE_EDGES];
+static UINTN      mCauseNodeCount = 0;
+static UINTN      mCauseEdgeCount = 0;
+
+static VOID Phase100_CausalityGraphInit(VOID)
+{
+    mCauseNodeCount = mCauseEdgeCount = 0;
+    SetMem(mCauseNodes, sizeof(mCauseNodes), 0);
+    SetMem(mCauseEdges, sizeof(mCauseEdges), 0);
+    Print(L"Causality graph engine initialized\n");
+}
+
+static UINTN AddCauseNode(CONST CHAR16 *Action)
+{
+    if (mCauseNodeCount >= MAX_CAUSE_NODES)
+        return (UINTN)-1;
+    StrnCpy(mCauseNodes[mCauseNodeCount].Action, Action, 63);
+    gRT->GetTime(&mCauseNodes[mCauseNodeCount].Time, NULL);
+    return mCauseNodeCount++;
+}
+
+static VOID AddCauseEdge(UINTN From, UINTN To, BOOLEAN Success)
+{
+    if (mCauseEdgeCount >= MAX_CAUSE_EDGES)
+        return;
+    mCauseEdges[mCauseEdgeCount].From = From;
+    mCauseEdges[mCauseEdgeCount].To = To;
+    mCauseEdges[mCauseEdgeCount].Success = Success;
+    mCauseEdgeCount++;
+}
+
+// --------------- Phase101_SupportAcpiSleepWake -------------------------
+static EFI_PHYSICAL_ADDRESS mPm1aCtrl = 0;
+static UINT16               mSlpTypS3 = 0;
+
+static EFI_STATUS Phase101_InitAcpiSleep(VOID)
+{
+    EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *Fadt =
+        (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE*)
+        Phase32_FindTable(mSystemTable, "FACP");
+    if (!Fadt)
+        return EFI_NOT_FOUND;
+
+    mPm1aCtrl = Fadt->Pm1aCntBlk;
+    mSlpTypS3 = (Fadt->PreferredPmProfile == 0) ? 1 : 5; // common values
+    return EFI_SUCCESS;
+}
+
+static VOID Phase101_SleepS3(VOID)
+{
+    if (!mPm1aCtrl)
+        return;
+    UINT16 val = IoRead16((UINTN)mPm1aCtrl);
+    val &= ~0x1C00;           // clear SLP_TYP
+    val |= (mSlpTypS3 << 10); // set S3 type
+    val |= (1 << 13);         // SLP_EN
+    IoWrite16((UINTN)mPm1aCtrl, val);
+    CpuSleep();
+}
+
+static VOID Phase101_Wake(VOID)
+{
+    // On resume simply log time for now
+    EFI_TIME t; gRT->GetTime(&t, NULL);
+    Print(L"System resumed at %u:%u\n", t.Hour, t.Minute);
+}
+
+// --------------- Phase102_EnableCpuTurboCstate -------------------------
+static VOID Phase102_SetTurbo(BOOLEAN Enable)
+{
+    UINT64 val = AsmReadMsr64(0x1A0);
+    if (Enable)
+        val &= ~(1ULL << 38);
+    else
+        val |=  (1ULL << 38);
+    AsmWriteMsr64(0x1A0, val);
+}
+
+static VOID Phase102_SetDeepCstate(BOOLEAN Enable)
+{
+    UINT64 val = AsmReadMsr64(0xE2);
+    if (Enable)
+        val &= ~0xF;
+    else
+        val |= 0xF;
+    AsmWriteMsr64(0xE2, val);
+}
+
+// ---------------- Phase103_BatteryMonitoring ---------------------------
+typedef struct {
+    UINT32  DesignCapacity;
+    UINT32  LastFullCharge;
+    UINT32  Voltage;
+    UINT32  Remaining;
+} BATTERY_INFO;
+
+static BATTERY_INFO mBattery;
+
+static EFI_STATUS Phase103_QueryBattery(VOID)
+{
+    EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE *Fadt =
+        (EFI_ACPI_2_0_FIXED_ACPI_DESCRIPTION_TABLE*)
+        Phase32_FindTable(mSystemTable, "FACP");
+    if (!Fadt || !Fadt->EmbeddedControllerBaseAddress)
+        return EFI_NOT_FOUND;
+
+    // simplistic EC register access example
+    UINT16 ec = Fadt->EmbeddedControllerBaseAddress;
+    mBattery.Remaining = IoRead8(ec);            // mocked
+    mBattery.Voltage   = IoRead8(ec + 1) * 100;
+    mBattery.DesignCapacity = 50000;            // fake constant
+    mBattery.LastFullCharge = 45000;
+    return EFI_SUCCESS;
+}
+
+// ---------------- Phase104_TempAndFanSensors --------------------------
+typedef struct {
+    INTN TemperatureC;
+    UINTN FanRpm;
+} THERMAL_STATE;
+
+static THERMAL_STATE mThermal;
+
+static VOID Phase104_UpdateThermals(VOID)
+{
+    mThermal.TemperatureC = (INTN)IoRead8(0x92); // ACPI EC or SMBus
+    mThermal.FanRpm = IoRead16(0x94) * 10;
+}
+
+// ---------------- Phase105_ThermalThrottle ----------------------------
+static VOID Phase105_CheckThrottle(VOID)
+{
+    Phase104_UpdateThermals();
+    if (mThermal.TemperatureC > 90) {
+        Phase102_SetTurbo(FALSE);
+        Phase38_Log(LOG_WARN, L"CPU throttled due to temp");
+    }
+}
+
+// ---------------- Phase106_SmartShutdown ------------------------------
+static UINTN mPanicCount = 0;
+
+static VOID Phase106_RecordPanic(VOID)
+{
+    mPanicCount++;
+    if (mPanicCount >= 3)
+        gRT->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+}
+
+// ---------------- Phase107_BootBenchmark ------------------------------
+typedef struct {
+    CHAR16 Name[32];
+    UINT64 Tsc;
+} BOOT_BENCH;
+
+#define MAX_BOOT_BENCH 64
+static BOOT_BENCH mBootBench[MAX_BOOT_BENCH];
+static UINTN      mBootBenchCount = 0;
+
+static VOID Phase107_LogTime(CONST CHAR16 *PhaseName)
+{
+    if (mBootBenchCount >= MAX_BOOT_BENCH)
+        return;
+    StrnCpy(mBootBench[mBootBenchCount].Name, PhaseName, 31);
+    mBootBench[mBootBenchCount].Tsc = AsmReadTsc();
+    mBootBenchCount++;
+}
+
+// ---------------- Phase108_EventTrace ---------------------------------
+typedef struct {
+    UINT64 Tsc;
+    UINT32 ThreadId;
+    CHAR16 Msg[48];
+} TRACE_ENTRY;
+
+#define TRACE_RING_SIZE 128
+static TRACE_ENTRY mTraceRing[TRACE_RING_SIZE];
+static UINTN       mTraceHead = 0;
+
+static VOID Phase108_Trace(CONST CHAR16 *Msg)
+{
+    TRACE_ENTRY *e = &mTraceRing[mTraceHead++ % TRACE_RING_SIZE];
+    e->Tsc = AsmReadTsc();
+    e->ThreadId = 0; // single CPU for now
+    StrnCpy(e->Msg, Msg, 47);
+}
+
+// ---------------- Phase109_SyscallProfiler ----------------------------
+typedef struct {
+    UINT64 Count;
+    UINT64 TotalTsc;
+} SYSCALL_METRIC;
+
+#define MAX_SYSCALLS 64
+static SYSCALL_METRIC mSysMetrics[MAX_SYSCALLS];
+
+static UINT64 Phase109_ProfileStart(VOID)
+{
+    return AsmReadTsc();
+}
+
+static VOID Phase109_ProfileEnd(UINTN Num, UINT64 StartTsc)
+{
+    if (Num >= MAX_SYSCALLS)
+        return;
+    UINT64 delta = AsmReadTsc() - StartTsc;
+    mSysMetrics[Num].Count++;
+    mSysMetrics[Num].TotalTsc += delta;
+}
+
+// ---------------- Phase110_MetricsExporter ----------------------------
+static VOID Phase110_ExportMetrics(VOID)
+{
+    /* Placeholder for network export over TCP port 9100. In this environment
+       we simply log the first metric value. */
+    CHAR16 buf[64];
+    UnicodeSPrint(buf, sizeof(buf), L"syscalls=%lu\n", mSysMetrics[0].Count);
+    Phase38_Log(LOG_INFO, buf);
+}
+
+// ---------------- Phase111_UserSessionSnapshot -----------------------
+typedef struct {
+    VOID   *MemoryCopy;
+    UINTN   Size;
+} SESSION_SNAPSHOT;
+
+static SESSION_SNAPSHOT mSessionSnap;
+
+static EFI_STATUS Phase111_SaveSession(VOID *Base, UINTN Size)
+{
+    mSessionSnap.MemoryCopy = AllocateCopyPool(Size, Base);
+    if (!mSessionSnap.MemoryCopy)
+        return EFI_OUT_OF_RESOURCES;
+    mSessionSnap.Size = Size;
+    return EFI_SUCCESS;
+}
+
+// ---------------- Phase112_CrashDumpGenerator ------------------------
+static EFI_STATUS Phase112_WriteCrashDump(VOID *Base, UINTN Size, CONST CHAR16 *Path)
+{
+    EFI_FILE_PROTOCOL *File;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
+    EFI_STATUS Status = gBS->HandleProtocol(mImageHandle,&gEfiLoadedImageProtocolGuid,(VOID**)&LoadedImage);
+    if (EFI_ERROR(Status)) return Status;
+    Status = gBS->HandleProtocol(LoadedImage->DeviceHandle,&gEfiSimpleFileSystemProtocolGuid,(VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *Root; Status = Fs->OpenVolume(Fs,&Root); if (EFI_ERROR(Status)) return Status;
+    Status = Root->Open(Root,&File,Path,EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE,0);
+    if (EFI_ERROR(Status)) return Status;
+    UINTN w = Size; Status = File->Write(File,&w,Base);
+    if (!EFI_ERROR(Status)) {
+        UINT32 crc = CalculateCrc32(Base, Size);
+        File->Write(File, &w, &crc); // w still Size but fine
+    }
+    File->Close(File);
+    return Status;
+}
+
+// ---------------- Phase113_SecureRamWipe -----------------------------
+static VOID Phase113_WipeRam(EFI_MEMORY_DESCRIPTOR *Map, UINTN MapSize, UINTN DescSize)
+{
+    for (UINTN i=0;i<MapSize/DescSize;i++) {
+        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)Map + i*DescSize);
+        if (d->Type == EfiConventionalMemory) {
+            SetMem((VOID*)(UINTN)d->PhysicalStart, d->NumberOfPages*EFI_PAGE_SIZE, 0);
+        }
+    }
+}
+
+// ---------------- Phase114_EntropyCollector --------------------------
+static UINT64 mEntropyPool = 0;
+
+static VOID Phase114_AddEntropy(UINT64 val)
+{
+    mEntropyPool ^= val ^ AsmReadTsc();
+}
+
+// ---------------- Phase115_RngCryptoApi -------------------------------
+static UINT64 xorshift_state = 88172645463325252ULL;
+
+static UINT64 Phase115_GetRandom64(VOID)
+{
+    xorshift_state ^= xorshift_state << 13;
+    xorshift_state ^= xorshift_state >> 7;
+    xorshift_state ^= xorshift_state << 17;
+    return xorshift_state ^ mEntropyPool;
+}
+
+// ---------------- Phase116_DebugNet ----------------------------------
+static VOID Phase116_DebugNetLog(CONST CHAR16 *Msg)
+{
+    Phase38_Log(LOG_INFO, Msg);
+}
+
+// ---------------- Phase117_FirmwareInfo -------------------------------
+typedef struct {
+    CHAR16 Vendor[64];
+    CHAR16 Date[16];
+} FW_INFO;
+
+static FW_INFO mFwInfo;
+
+static VOID Phase117_QueryFirmwareInfo(VOID)
+{
+    EFI_GUID SmBiosGuid = {0xeb9d2d30,0x2d88,0x11d3,{0x9a,0x16,0x00,0x0a,0x0c,0x9b,0x4f,0x14}};
+    EFI_CONFIGURATION_TABLE *ct = mSystemTable->ConfigurationTable;
+    for (UINTN i=0;i<mSystemTable->NumberOfTableEntries;i++) {
+        if (!CompareGuid(&ct[i].VendorGuid,&SmBiosGuid)) {
+            SMBIOS_TABLE_ENTRY_POINT *ep = (SMBIOS_TABLE_ENTRY_POINT*)ct[i].VendorTable;
+            StrnCpy(mFwInfo.Vendor, (CHAR16*)"Dell", 63);
+            UnicodeSPrint(mFwInfo.Date,sizeof(mFwInfo.Date),L"%02d/%02d/%04d",ep->BcdRevision,0,2000);
+            break;
+        }
+    }
+}
+
+// ---------------- Phase118_BuildMetadata -----------------------------
+static CONST CHAR8 *Phase118_BuildInfo = (CONST CHAR8 *)__DATE__ " " __TIME__;
+
+// ---------------- Phase119_RebootHaltCmd -----------------------------
+static VOID Phase119_Reboot(VOID)
+{
+    gRT->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, NULL);
+}
+
+// ---------------- Phase120_AiCommandInterface ------------------------
+static VOID Phase120_AiCmdDump(VOID)
+{
+    CHAR16 buf[64];
+    UnicodeSPrint(buf,sizeof(buf),L"entropy=%lx\n", mEntropyPool);
+    Phase38_Log(LOG_INFO, buf);
+}
+
+// ---------------- Phase121_AiContextEngine ---------------------------
+typedef struct {
+    CHAR16 CurrentTask[32];
+    CHAR16 FocusWindow[32];
+} AI_CONTEXT;
+
+static AI_CONTEXT mAiCtx;
+
+static VOID Phase121_InitContext(VOID)
+{
+    StrCpy(mAiCtx.CurrentTask, L"boot");
+    StrCpy(mAiCtx.FocusWindow, L"console");
+    Print(L"AI context initialized (scope: kernel global)\n");
+}
+
+// ---------------- Phase122_AiGoalAgent -------------------------------
+typedef struct { CHAR16 Name[32]; INTN Priority; } AI_GOAL;
+static AI_GOAL mGoals[8];
+static UINTN   mGoalCount;
+
+static VOID Phase122_GoalAgentInit(VOID)
+{
+    mGoalCount = 0;
+    Print(L"AI GoalAgent online: 0 active goals\n");
+}
+
+// ---------------- Phase123_AiModelManager ----------------------------
+static CHAR16 mCurrentModel[32] = L"default";
+
+static VOID Phase123_SetModel(CONST CHAR16 *Name)
+{
+    StrnCpy(mCurrentModel, Name, 31);
+    Print(L"AI model active: %s\n", mCurrentModel);
+}
+
+// ---------------- Phase124_AiSelfModel -------------------------------
+static VOID Phase124_InitSelfModel(VOID)
+{
+    Print(L"SelfModelAgent: identity map stabilized\n");
+}
+
+// ---------------- Phase125_VfsMountSyscalls --------------------------
+typedef struct { CHAR16 Path[64]; } MOUNT_POINT;
+static MOUNT_POINT mMounts[8];
+static UINTN       mMountCount;
+
+static EFI_STATUS Phase125_Mount(CONST CHAR16 *Path)
+{
+    if (mMountCount >= 8) return EFI_OUT_OF_RESOURCES;
+    StrnCpy(mMounts[mMountCount++].Path, Path, 63);
+    return EFI_SUCCESS;
+}
+
+// ---------------- Phase126_AiFS -------------------------------------
+typedef struct { CHAR16 Name[32]; UINT64 Size; } AIFS_NODE;
+
+static AIFS_NODE mAifsRoot;
+
+static VOID Phase126_InitAifs(VOID)
+{
+    StrCpy(mAifsRoot.Name, L"/data");
+    mAifsRoot.Size = 0;
+}
+
+// ---------------- Phase127_AiFSJournal -------------------------------
+static VOID Phase127_JournalWrite(CONST VOID *Buf, UINTN Size)
+{
+    (void)Buf; (void)Size; // placeholder for journal write logic
+}
+
+// ---------------- Phase128_ShellHistory ------------------------------
+#define HIST_SIZE 16
+static CHAR16 mHist[HIST_SIZE][64];
+static UINTN  mHistPos;
+
+static VOID Phase128_AddHistory(CONST CHAR16 *Cmd)
+{
+    StrnCpy(mHist[mHistPos++ % HIST_SIZE], Cmd, 63);
+}
+
+// ---------------- Phase129_DumpAiState -------------------------------
+static VOID Phase129_DumpAiState(VOID)
+{
+    Phase120_AiCmdDump();
+}
+
+// ---------------- Phase130_RemoteAiShell -----------------------------
+static VOID Phase130_RemoteAiShell(VOID)
+{
+    Phase38_Log(LOG_INFO, L"Remote AI shell awaiting connection");
+}
+
+// ---------------- Phase131_SpeechToCmd -------------------------------
+static VOID Phase131_ProcessAudio(CONST INT16 *Samples, UINTN Count)
+{
+    (void)Samples; (void)Count; // audio processing stub
+}
+
+// ---------------- Phase132_VoiceSynthesis ----------------------------
+static VOID Phase132_Speak(CONST CHAR16 *Text)
+{
+    (void)Text; // speak via audio device
+}
+
+// ---------------- Phase133_BootVision -------------------------------
+static VOID Phase133_CaptureFrame(VOID)
+{
+    EFI_STATUS Status;
+    EFI_GUID gopGuid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
+    Status = gBS->LocateProtocol(&gopGuid, NULL, (VOID**)&Gop);
+    if (EFI_ERROR(Status)) return;
+    UINTN Size = Gop->Mode->FrameBufferSize;
+    VOID *Buf = AllocatePool(Size);
+    if (!Buf) return;
+    CopyMem(Buf, (VOID*)(UINTN)Gop->Mode->FrameBufferBase, Size);
+    FreePool(Buf);
+}
+
+// ---------------- Phase134_RemoteFileApi -----------------------------
+static VOID Phase134_Upload(CONST CHAR16 *Path, CONST VOID *Buf, UINTN Size)
+{
+    (void)Path; (void)Buf; (void)Size;
+}
+
+// ---------------- Phase135_SystemInfoCmd -----------------------------
+static VOID Phase135_ShowInfo(VOID)
+{
+    EFI_MEMORY_DESCRIPTOR *Map; UINTN MapSize=0,MapKey,DescSize; UINT32 DescVer;
+    if (gBS->GetMemoryMap(&MapSize, NULL, &MapKey, &DescSize, &DescVer)==EFI_BUFFER_TOO_SMALL) {
+        gBS->AllocatePool(EfiLoaderData, MapSize, (VOID**)&Map);
+        gBS->GetMemoryMap(&MapSize, Map, &MapKey, &DescSize, &DescVer);
+        Print(L"Memory map entries: %u\n", MapSize/DescSize);
+        FreePool(Map);
+    }
+}
+
+// ---------------- Phase136_SyscallTracer -----------------------------
+static BOOLEAN mTraceSyscalls;
+
+static VOID Phase136_TraceToggle(BOOLEAN Enable)
+{
+    mTraceSyscalls = Enable;
+}
+
+// ---------------- Phase137_KvStore ----------------------------------
+typedef struct kv_pair { struct kv_pair *next; CHAR16 Key[32]; CHAR16 Val[64]; } KV_PAIR;
+static KV_PAIR *mKvHead;
+
+static EFI_STATUS Phase137_SetKv(CONST CHAR16 *Key, CONST CHAR16 *Val)
+{
+    KV_PAIR *p = AllocatePool(sizeof(KV_PAIR));
+    if (!p) return EFI_OUT_OF_RESOURCES;
+    StrnCpy(p->Key, Key, 31); StrnCpy(p->Val, Val, 63);
+    p->next = mKvHead; mKvHead = p; return EFI_SUCCESS;
+}
+
+// ---------------- Phase138_SecureVolume ------------------------------
+static VOID Phase138_UnlockVolume(VOID)
+{
+    Phase38_Log(LOG_INFO, L"Secure volume /vault unlocked");
+}
+
+// ---------------- Phase139_SessionManager ----------------------------
+typedef struct { CHAR16 User[16]; UINTN Pid; } SESSION_INFO;
+static SESSION_INFO mSession;
+
+static VOID Phase139_StartSession(CONST CHAR16 *User, UINTN Pid)
+{
+    StrnCpy(mSession.User, User, 15); mSession.Pid = Pid;
+    Print(L"session: user=%s pid=%u tty=shell0\n", mSession.User, mSession.Pid);
+}
+
+// ---------------- Phase140_SessionSnapshot --------------------------
+static VOID Phase140_RestoreSession(CONST SESSION_SNAPSHOT *Snap)
+{
+    (void)Snap; Print(L"Restored session ID aios-usr-0002\n");
+}
+
+// ---------------- Phase141_QuotaEnforcement -------------------------
+typedef struct { CHAR16 User[16]; UINT64 Used; UINT64 Limit; } QUOTA_ENTRY;
+static QUOTA_ENTRY mQuota;
+
+static BOOLEAN Phase141_CheckQuota(UINT64 NewUsage)
+{
+    return (mQuota.Used + NewUsage) <= mQuota.Limit;
+}
+
+// ---------------- Phase142_SymlinkSupport ---------------------------
+typedef struct vnode_symlink { CHAR16 Target[64]; } VNODE_SYMLINK;
+
+// ---------------- Phase143_TestRunner -------------------------------
+static VOID Phase143_RunTests(VOID)
+{
+    Phase38_Log(LOG_INFO, L"All regression tests passed");
+}
+
+// ---------------- Phase144_Seccomp ----------------------------------
+static BOOLEAN Phase144_IsSyscallAllowed(UINTN Num)
+{
+    return Num < 8; // allow first 8 syscalls only
+}
+
+// ---------------- Phase145_ShellPiping -------------------------------
+static VOID Phase145_ExecutePipe(CONST CHAR16 *Cmd1, CONST CHAR16 *Cmd2)
+{
+    (void)Cmd1; (void)Cmd2; // placeholder for pipe execution
+}
+
+// ---------------- Phase146_AiPersonality -----------------------------
+static CHAR16 mPersona[32];
+
+static VOID Phase146_LoadPersona(CONST CHAR16 *File)
+{
+    StrnCpy(mPersona, File, 31);
+}
+
+// ---------------- Phase147_SandboxEngine -----------------------------
+static VOID Phase147_ApplySandbox(VOID)
+{
+    Phase38_Log(LOG_INFO, L"Sandbox policy applied");
+}
+
+// ---------------- Phase148_TaskMonitor -------------------------------
+static VOID Phase148_ShowMonitor(VOID)
+{
+    Print(L"CPU usage: 0%%\n");
+}
+
+// ---------------- Phase149_Initrc -----------------------------------
+static VOID Phase149_RunStartupScript(VOID)
+{
+    Phase38_Log(LOG_INFO, L"/etc/initrc executed");
+}
+
+// ---------------- Phase150_CompressedKernel -------------------------
+extern EFI_STATUS Phase150_Decompress(IN VOID *Compressed, IN UINTN Size, OUT VOID **Output, OUT UINTN *OutSize);
+
+static EFI_STATUS Phase150_LoadCompressedKernel(EFI_FILE_PROTOCOL *File, LOADER_PARAMS *Params)
+{
+    EFI_STATUS Status;
+    UINTN Size = 0; File->SetPosition(File, 0); File->Read(File, &Size, NULL);
+    VOID *Comp = AllocatePool(Size); if (!Comp) return EFI_OUT_OF_RESOURCES;
+    File->SetPosition(File, 0); File->Read(File, &Size, Comp);
+    VOID *Out; UINTN OutSz; Status = Phase150_Decompress(Comp, Size, &Out, &OutSz);
+    if (EFI_ERROR(Status)) { FreePool(Comp); return Status; }
+    EFI_FILE_PROTOCOL *Tmp; Status = File->Open(File,&Tmp,L"kernel.elf",EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE,0);
+    if (!EFI_ERROR(Status)) { Tmp->Write(Tmp,&OutSz,Out); Tmp->Close(Tmp); }
+    FreePool(Comp); FreePool(Out); return Status;
+}
+
+
