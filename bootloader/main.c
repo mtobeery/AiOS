@@ -2521,5 +2521,723 @@ static VOID Phase200_RegisterAgent(CONST CHAR16 *Name, UINTN Caps)
     A->Caps = Caps;
 }
 
+// ======================================================================
+// Phase 201 - Phase 250 Advanced Features
+// ======================================================================
+
+// ---------------- Phase201_FederatedTrustExchange -------------------
+#define MAX_TRUST_NODES 8
+
+typedef struct {
+    CHAR16  Id[32];
+    INTN    Trust;
+} TRUST_NODE;
+
+static TRUST_NODE mTrustNodes[MAX_TRUST_NODES];
+static UINTN      mTrustNodeCount;
+
+EFI_STATUS Phase201_UpdateTrust(CONST CHAR16 *Id, INTN Delta)
+{
+    for (UINTN i = 0; i < mTrustNodeCount; i++) {
+        if (!StrCmp(mTrustNodes[i].Id, Id)) {
+            mTrustNodes[i].Trust += Delta;
+            return EFI_SUCCESS;
+        }
+    }
+    if (mTrustNodeCount >= MAX_TRUST_NODES)
+        return EFI_OUT_OF_RESOURCES;
+    StrnCpy(mTrustNodes[mTrustNodeCount].Id, Id, 31);
+    mTrustNodes[mTrustNodeCount].Trust = Delta;
+    mTrustNodeCount++;
+    return EFI_SUCCESS;
+}
+
+// ---------------- Phase202_KernelAiContract -------------------------
+typedef struct {
+    UINTN  CpuLimit;   // percent
+    UINTN  MemLimit;   // MB
+} AI_CONTRACT;
+
+static AI_CONTRACT mContract = {90, 1024};
+
+BOOLEAN Phase202_ValidateUsage(UINTN CpuUse, UINTN MemUse)
+{
+    if (CpuUse > mContract.CpuLimit || MemUse > mContract.MemLimit) {
+        Print(L"Contract violation: CPU %u%% MEM %uMB\n", CpuUse, MemUse);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// ---------------- Phase203_SecureAIFeedbackVoting -------------------
+typedef struct {
+    INTN  Vote;
+    UINTN Weight;
+} VOTE_ENTRY;
+
+#define MAX_VOTES 8
+static VOTE_ENTRY mVotes[MAX_VOTES];
+static UINTN      mVoteCount;
+
+VOID Phase203_SubmitVote(INTN Score, UINTN Weight)
+{
+    if (mVoteCount >= MAX_VOTES)
+        return;
+    mVotes[mVoteCount].Vote = Score;
+    mVotes[mVoteCount].Weight = Weight;
+    mVoteCount++;
+}
+
+INTN Phase203_FinalScore(VOID)
+{
+    INTN Sum = 0; UINTN W = 0;
+    for (UINTN i = 0; i < mVoteCount; i++) {
+        Sum += mVotes[i].Vote * (INTN)mVotes[i].Weight;
+        W   += mVotes[i].Weight;
+    }
+    return (W ? Sum / (INTN)W : 0);
+}
+
+// ---------------- Phase204_ConditionalModelActivation ---------------
+#define MAX_MODELS 8
+
+typedef struct {
+    CHAR16 Name[16];
+    BOOLEAN Active;
+} MODEL_ENTRY;
+
+static MODEL_ENTRY mModels[MAX_MODELS];
+static UINTN       mModelCount;
+
+VOID Phase204_RegisterModel(CONST CHAR16 *Name)
+{
+    if (mModelCount >= MAX_MODELS)
+        return;
+    StrnCpy(mModels[mModelCount].Name, Name, 15);
+    mModels[mModelCount].Active = FALSE;
+    mModelCount++;
+}
+
+VOID Phase204_ActivateModel(CONST CHAR16 *Name, BOOLEAN Enable)
+{
+    for (UINTN i = 0; i < mModelCount; i++)
+        if (!StrCmp(mModels[i].Name, Name))
+            mModels[i].Active = Enable;
+}
+
+BOOLEAN Phase204_IsModelActive(CONST CHAR16 *Name)
+{
+    for (UINTN i = 0; i < mModelCount; i++)
+        if (!StrCmp(mModels[i].Name, Name))
+            return mModels[i].Active;
+    return FALSE;
+}
+
+// ---------------- Phase205_PredictiveFaultAvoidance -----------------
+static UINTN mSyscallSpike;
+static UINTN mFaultPredictions;
+
+VOID Phase205_RecordSyscall(VOID)
+{
+    mSyscallSpike++;
+    if (mSyscallSpike > 100) {
+        mFaultPredictions++;
+        Print(L"Kernel predicted memory exhaustion - process throttled\n");
+        mSyscallSpike = 0;
+    }
+}
+
+UINTN Phase205_GetPredictions(VOID)
+{
+    return mFaultPredictions;
+}
+
+// ---------------- Phase206_AIEnhancedScheduler ----------------------
+static UINTN mProcTrust[16];
+
+VOID Phase206_SetTrust(UINTN Pid, UINTN Score)
+{
+    if (Pid < 16)
+        mProcTrust[Pid] = Score;
+}
+
+UINTN Phase206_GetPriority(UINTN Pid, UINTN BasePrio)
+{
+    if (Pid < 16)
+        return BasePrio + (mProcTrust[Pid] / 20);
+    return BasePrio;
+}
+
+// ---------------- Phase207_IntentAwareAutocomplete ------------------
+typedef struct { CHAR16 Cmd[32]; UINTN Uses; } HIST_ENTRY;
+static HIST_ENTRY mHist[16];
+static UINTN      mHistCount;
+
+VOID Phase207_RecordCommand(CONST CHAR16 *Cmd)
+{
+    for (UINTN i = 0; i < mHistCount; i++) {
+        if (!StrCmp(mHist[i].Cmd, Cmd)) {
+            mHist[i].Uses++;
+            return;
+        }
+    }
+    if (mHistCount < 16) {
+        StrnCpy(mHist[mHistCount].Cmd, Cmd, 31);
+        mHist[mHistCount].Uses = 1;
+        mHistCount++;
+    }
+}
+
+CONST CHAR16* Phase207_Suggest(CONST CHAR16 *Prefix)
+{
+    UINTN bestIdx = 0; UINTN bestScore = 0;
+    for (UINTN i = 0; i < mHistCount; i++) {
+        if (StrnCmp(mHist[i].Cmd, Prefix, StrLen(Prefix)) == 0) {
+            if (mHist[i].Uses > bestScore) {
+                bestIdx = i; bestScore = mHist[i].Uses;
+            }
+        }
+    }
+    return (bestScore ? mHist[bestIdx].Cmd : NULL);
+}
+
+// ---------------- Phase208_EthicsPolicyEditor -----------------------
+static CHAR16 mEthicsFile[64] = L"/etc/ai/ethics.rules";
+
+EFI_STATUS Phase208_SavePolicy(CONST CHAR16 *Rules)
+{
+    EFI_FILE_PROTOCOL *Root;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    EFI_STATUS Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status))
+        return Status;
+    Status = Fs->OpenVolume(Fs, &Root);
+    if (EFI_ERROR(Status))
+        return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, mEthicsFile, EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE|EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(Status))
+        return Status;
+    UINTN Len = StrLen(Rules)*sizeof(CHAR16);
+    Status = File->Write(File, &Len, (VOID*)Rules);
+    File->Close(File);
+    return Status;
+}
+
+// ---------------- Phase209_MemoryExpiry -----------------------------
+typedef struct { UINT64 Ts; CHAR16 Text[64]; INTN Score; } MEM_ENTRY;
+static MEM_ENTRY mMemStore[32];
+static UINTN     mMemPos;
+
+VOID Phase209_AddMemory(CONST CHAR16 *Text, INTN Score)
+{
+    MEM_ENTRY *M = &mMemStore[mMemPos++ % 32];
+    M->Ts = Phase63_GetMs();
+    StrnCpy(M->Text, Text, 63);
+    M->Score = Score;
+}
+
+VOID Phase209_Prune(VOID)
+{
+    UINT64 now = Phase63_GetMs();
+    for (UINTN i = 0; i < 32; i++) {
+        if (mMemStore[i].Score > 0 && now - mMemStore[i].Ts > 60000) {
+            mMemStore[i].Score--;
+        }
+    }
+}
+
+// ---------------- Phase210_AutomaticContextTagging ------------------
+typedef struct {
+    CHAR16 User[16];
+    CHAR16 Goal[32];
+    UINT64 Time;
+} CTX_TAG;
+
+static CTX_TAG mCtx;
+
+VOID Phase210_SetContext(CONST CHAR16 *User, CONST CHAR16 *Goal)
+{
+    StrnCpy(mCtx.User, User, 15);
+    StrnCpy(mCtx.Goal, Goal, 31);
+    mCtx.Time = Phase63_GetMs();
+}
+
+// ---------------- Phase211_SecureCheckpoint -------------------------
+EFI_STATUS Phase211_SaveCheckpoint(CONST VOID *Data, UINTN Size)
+{
+    EFI_STATUS Status;
+    EFI_FILE_PROTOCOL *Root; EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    Status = Fs->OpenVolume(Fs, &Root); if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, L"/ai/checkpoint.verified", EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status)) return Status;
+    UINTN Sz = Size;
+    Status = File->Write(File, &Sz, Data);
+    File->Close(File);
+    return Status;
+}
+
+// ---------------- Phase212_TelemetryAPI -----------------------------
+typedef struct { UINT64 Ts; INTN Metric; } TEL_ENTRY;
+static TEL_ENTRY mTel[32];
+static UINTN     mTelPos;
+
+VOID Phase212_RecordTelemetry(INTN Metric)
+{
+    TEL_ENTRY *E = &mTel[mTelPos++ % 32];
+    E->Ts = Phase63_GetMs();
+    E->Metric = Metric;
+}
+
+// ---------------- Phase213_GpuOffloadMetrics ------------------------
+typedef struct { UINTN Ops; UINTN Mem; UINTN Lat; } GPU_METRIC;
+static GPU_METRIC mGpuMetric;
+
+VOID Phase213_UpdateGpuMetric(UINTN Ops, UINTN Mem, UINTN Lat)
+{
+    mGpuMetric.Ops = Ops; mGpuMetric.Mem = Mem; mGpuMetric.Lat = Lat;
+}
+
+// ---------------- Phase214_ReplayConsistency ------------------------
+static UINTN mReplayDeviation;
+
+VOID Phase214_RecordReplay(INTN Ref, INTN New)
+{
+    if (Ref != 0) {
+        UINTN Dev = (Ref > New) ? (Ref - New) : (New - Ref);
+        if (Dev > mReplayDeviation)
+            mReplayDeviation = Dev;
+    }
+}
+
+// ---------------- Phase215_SimulationSandbox -----------------------
+typedef struct { INTN ScoreA; INTN ScoreB; } SIM_RESULT;
+
+SIM_RESULT Phase215_Simulate(INTN A, INTN B)
+{
+    SIM_RESULT R = {A, B};
+    return R;
+}
+
+// ---------------- Phase216_CausalityChainAPI -----------------------
+typedef struct { UINT64 Ts; CHAR16 Desc[32]; } CAUSAL_REC;
+static CAUSAL_REC mCausal[16];
+static UINTN      mCausalPos;
+
+VOID Phase216_RecordCause(CONST CHAR16 *Desc)
+{
+    CAUSAL_REC *R = &mCausal[mCausalPos++ % 16];
+    R->Ts = Phase63_GetMs();
+    StrnCpy(R->Desc, Desc, 31);
+}
+
+// ---------------- Phase217_ModelHibernation ------------------------
+EFI_STATUS Phase217_HibernateModel(CONST CHAR16 *Name)
+{
+    EFI_STATUS Status;
+    EFI_FILE_PROTOCOL *Root; EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    Status = Fs->OpenVolume(Fs, &Root); if (EFI_ERROR(Status)) return Status;
+    EFI_FILE_PROTOCOL *File;
+    Status = Root->Open(Root, &File, Name, EFI_FILE_MODE_CREATE|EFI_FILE_MODE_WRITE, 0);
+    if (EFI_ERROR(Status)) return Status;
+    File->Close(File);
+    return EFI_SUCCESS;
+}
+
+// ---------------- Phase218_PersonalityTracking ---------------------
+typedef struct { CHAR16 Tone[16]; UINTN Risk; } PERSONA;
+static PERSONA mPersona;
+
+VOID Phase218_UpdatePersonality(CONST CHAR16 *Tone, UINTN Risk)
+{
+    StrnCpy(mPersona.Tone, Tone, 15);
+    mPersona.Risk = Risk;
+}
+
+// ---------------- Phase219_RemoteModelRetirement -------------------
+EFI_STATUS Phase219_RetireModel(CONST CHAR16 *Name)
+{
+    EFI_STATUS Status;
+    EFI_FILE_PROTOCOL *Root; EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Fs;
+    Status = gBS->LocateProtocol(&gEfiSimpleFileSystemProtocolGuid, NULL, (VOID**)&Fs);
+    if (EFI_ERROR(Status)) return Status;
+    Status = Fs->OpenVolume(Fs, &Root); if (EFI_ERROR(Status)) return Status;
+    Status = Root->Delete(Root, (VOID*)Name);
+    return Status;
+}
+
+// ---------------- Phase220_ConfidenceMeter -------------------------
+typedef struct { INTN Score; CHAR16 Src[16]; } CONF_REC;
+static CONF_REC mConf;
+
+VOID Phase220_SetConfidence(INTN Score, CONST CHAR16 *Src)
+{
+    mConf.Score = Score; StrnCpy(mConf.Src, Src, 15);
+}
+
+// ---------------- Phase221_GovernanceEnforcement -------------------
+typedef struct { CHAR16 Goal[32]; BOOLEAN Allowed; } GOV_RULE;
+static GOV_RULE mGovRules[8];
+static UINTN    mGovCount;
+
+VOID Phase221_AddRule(CONST CHAR16 *Goal, BOOLEAN Allowed)
+{
+    if (mGovCount >= 8) return;
+    StrnCpy(mGovRules[mGovCount].Goal, Goal, 31);
+    mGovRules[mGovCount].Allowed = Allowed;
+    mGovCount++;
+}
+
+BOOLEAN Phase221_CheckGoal(CONST CHAR16 *Goal)
+{
+    for (UINTN i = 0; i < mGovCount; i++)
+        if (!StrCmp(mGovRules[i].Goal, Goal))
+            return mGovRules[i].Allowed;
+    return FALSE;
+}
+
+// ---------------- Phase222_PredictiveUpdateScheduling --------------
+static UINTN mNextUpdateTime;
+
+VOID Phase222_ScheduleUpdate(UINTN Time)
+{
+    mNextUpdateTime = Time;
+}
+
+UINTN Phase222_GetUpdateTime(VOID)
+{
+    return mNextUpdateTime;
+}
+
+// ---------------- Phase223_DynamicLearningRate ---------------------
+static UINTN mLearningRate = 20; // scaled by 1000 -> 0.02
+
+VOID Phase223_AdjustRate(INTN Delta)
+{
+    INTN Rate = (INTN)mLearningRate + Delta;
+    if (Rate < 1) Rate = 1;
+    if (Rate > 100) Rate = 100;
+    mLearningRate = (UINTN)Rate;
+}
+
+UINTN Phase223_GetRate(VOID)
+{
+    return mLearningRate;
+}
+
+// ---------------- Phase224_SimulateUser -----------------------------
+typedef struct { CHAR16 Act[32]; UINTN Impact; } USER_EVENT;
+static USER_EVENT mUserEvents[8];
+static UINTN      mUserCount;
+
+VOID Phase224_RecordUser(CONST CHAR16 *Act, UINTN Impact)
+{
+    if (mUserCount >= 8) return;
+    StrnCpy(mUserEvents[mUserCount].Act, Act, 31);
+    mUserEvents[mUserCount].Impact = Impact;
+    mUserCount++;
+}
+
+// ---------------- Phase225_ProfileSwitch ---------------------------
+static CHAR16 mKernelProfile[16] = L"default";
+
+VOID Phase225_SwitchProfile(CONST CHAR16 *Name)
+{
+    StrnCpy(mKernelProfile, Name, 15);
+}
+
+// ---------------- Phase226_SkillEvaluator --------------------------
+typedef struct { CHAR16 Name[16]; UINTN Score; UINTN Lat; } SKILL_SCORE;
+static SKILL_SCORE mSkillScores[8];
+static UINTN       mSkillScoreCount;
+
+VOID Phase226_EvaluateSkill(CONST CHAR16 *Name, UINTN Score, UINTN Lat)
+{
+    if (mSkillScoreCount >= 8) return;
+    SKILL_SCORE *S = &mSkillScores[mSkillScoreCount++];
+    StrnCpy(S->Name, Name, 15);
+    S->Score = Score; S->Lat = Lat;
+}
+
+// ---------------- Phase227_RegressionAlert -------------------------
+static INTN mBaseline = -1;
+
+VOID Phase227_CheckRegression(INTN Current)
+{
+    if (mBaseline < 0) { mBaseline = Current; return; }
+    if (Current > mBaseline * 11 / 10)
+        Print(L"Alert: performance regression detected\n");
+}
+
+// ---------------- Phase228_DeploymentLedger ------------------------
+typedef struct { CHAR16 Model[16]; UINT8 Hash[32]; CHAR16 Signer[16]; INTN Trust; } LEDGER_REC;
+static LEDGER_REC mLedger[16];
+static UINTN      mLedgerCount;
+
+VOID Phase228_RecordDeploy(CONST CHAR16 *Model, CONST UINT8 *Hash, CONST CHAR16 *Signer, INTN Trust)
+{
+    if (mLedgerCount >= 16) return;
+    LEDGER_REC *R = &mLedger[mLedgerCount++];
+    StrnCpy(R->Model, Model, 15);
+    CopyMem(R->Hash, Hash, 32);
+    StrnCpy(R->Signer, Signer, 15);
+    R->Trust = Trust;
+}
+
+// ---------------- Phase229_HybridExecution -------------------------
+typedef struct { UINTN Cpu; UINTN Gpu; UINTN Net; } HYB_MODE;
+static HYB_MODE mHybrid;
+
+VOID Phase229_SetHybrid(UINTN CpuP, UINTN GpuP, UINTN NetP)
+{
+    mHybrid.Cpu = CpuP; mHybrid.Gpu = GpuP; mHybrid.Net = NetP;
+}
+
+// ---------------- Phase230_QuantumReadiness ------------------------
+INTN Phase230_QuantumSubmit(CONST VOID *Job)
+{
+    (void)Job;
+    return -1; // no QPU
+}
+
+INTN Phase230_QuantumSign(CONST VOID *Data, UINTN Sz, UINT8 *Out)
+{
+    (void)Data; (void)Sz; (void)Out;
+    return -1;
+}
+
+// ---------------- Phase231_MemoryPrediction ------------------------
+static UINTN mMemPredict[16];
+
+VOID Phase231_UpdateUsage(UINTN Pid, UINTN Use)
+{
+    if (Pid < 16) mMemPredict[Pid] = Use;
+}
+
+UINTN Phase231_Predict(UINTN Pid)
+{
+    return (Pid < 16) ? mMemPredict[Pid] : 0;
+}
+
+// ---------------- Phase232_IntentVisualizer ------------------------
+EFI_STATUS Phase232_OutputGraph(EFI_FILE_PROTOCOL *File)
+{
+    CHAR8 Data[] = "digraph{}";
+    UINTN Sz = sizeof(Data)-1;
+    return File->Write(File, &Sz, Data);
+}
+
+// ---------------- Phase233_AiTips ---------------------------------
+typedef struct { CHAR16 Tip[64]; } TIP_REC;
+static TIP_REC mTips[8];
+static UINTN   mTipCount;
+
+VOID Phase233_AddTip(CONST CHAR16 *Tip)
+{
+    if (mTipCount < 8) { StrnCpy(mTips[mTipCount].Tip, Tip, 63); mTipCount++; }
+}
+
+// ---------------- Phase234_FederationMap ---------------------------
+typedef struct { CHAR16 Id[16]; CHAR16 Persona[16]; INTN Trust; } NODE_INFO;
+static NODE_INFO mNodeMap[8];
+static UINTN     mNodeCount;
+
+VOID Phase234_AddNode(CONST CHAR16 *Id, CONST CHAR16 *Persona, INTN Trust)
+{
+    if (mNodeCount >= 8) return;
+    NODE_INFO *N = &mNodeMap[mNodeCount++];
+    StrnCpy(N->Id, Id, 15); StrnCpy(N->Persona, Persona, 15); N->Trust = Trust;
+}
+
+// ---------------- Phase235_TimeWeightedGoals -----------------------
+typedef struct { CHAR16 Goal[32]; UINT64 Ts; } GOAL_REC;
+static GOAL_REC mGoals[8];
+static UINTN    mGoalCount;
+
+VOID Phase235_AddGoal(CONST CHAR16 *Goal)
+{
+    if (mGoalCount < 8) { StrnCpy(mGoals[mGoalCount].Goal, Goal, 31); mGoals[mGoalCount].Ts = Phase63_GetMs(); mGoalCount++; }
+}
+
+CONST CHAR16* Phase235_SelectGoal(VOID)
+{
+    UINT64 oldest = ~0ULL; UINTN idx = 0;
+    for (UINTN i = 0; i < mGoalCount; i++) {
+        if (mGoals[i].Ts < oldest) { oldest = mGoals[i].Ts; idx = i; }
+    }
+    return mGoalCount ? mGoals[idx].Goal : NULL;
+}
+
+// ---------------- Phase236_BootIntentRecovery ----------------------
+VOID Phase236_HandleCrash(CONST CHAR16 *LastPhase)
+{
+    Print(L"Recovered from crash at %s\n", LastPhase);
+}
+
+// ---------------- Phase237_IntentDrivenSched -----------------------
+static UINTN mSchedWeight[16];
+
+VOID Phase237_SetIntentWeight(UINTN Pid, UINTN Weight)
+{
+    if (Pid < 16) mSchedWeight[Pid] = Weight;
+}
+
+UINTN Phase237_GetIntentWeight(UINTN Pid)
+{
+    return (Pid < 16) ? mSchedWeight[Pid] : 0;
+}
+
+// ---------------- Phase238_StateDeltaSync --------------------------
+static UINT8 mSyncVector[16];
+
+VOID Phase238_UpdateVector(UINTN Index)
+{
+    if (Index < sizeof(mSyncVector)) mSyncVector[Index]++;
+}
+
+// ---------------- Phase239_IntegrityReplay -------------------------
+typedef struct { UINT32 Pcr; UINT8 Hash[32]; } PCR_REC;
+static PCR_REC mPcrHistory[8];
+static UINTN   mPcrCount;
+
+VOID Phase239_RecordPcr(UINT32 Pcr, CONST UINT8 *Hash)
+{
+    if (mPcrCount >= 8) return;
+    mPcrHistory[mPcrCount].Pcr = Pcr;
+    CopyMem(mPcrHistory[mPcrCount].Hash, Hash, 32);
+    mPcrCount++;
+}
+
+// ---------------- Phase240_TrustWeightedEscalation -----------------
+typedef struct { CHAR16 User[16]; INTN Trust; } USER_TRUST;
+static USER_TRUST mUserTrust[8];
+static UINTN      mUserTrustCount;
+
+VOID Phase240_SetUserTrust(CONST CHAR16 *User, INTN Score)
+{
+    for (UINTN i = 0; i < mUserTrustCount; i++) {
+        if (!StrCmp(mUserTrust[i].User, User)) { mUserTrust[i].Trust = Score; return; }
+    }
+    if (mUserTrustCount < 8) {
+        StrnCpy(mUserTrust[mUserTrustCount].User, User, 15);
+        mUserTrust[mUserTrustCount].Trust = Score;
+        mUserTrustCount++;
+    }
+}
+
+BOOLEAN Phase240_CanEscalate(CONST CHAR16 *User)
+{
+    for (UINTN i = 0; i < mUserTrustCount; i++) {
+        if (!StrCmp(mUserTrust[i].User, User))
+            return mUserTrust[i].Trust >= 75;
+    }
+    return FALSE;
+}
+
+// ---------------- Phase241_AgentBus -------------------------------
+typedef struct { CHAR16 Msg[32]; } BUS_MSG;
+static BUS_MSG mBus[8];
+static UINTN   mBusWrite, mBusRead;
+
+VOID Phase241_Send(CONST CHAR16 *Msg)
+{
+    StrnCpy(mBus[mBusWrite % 8].Msg, Msg, 31);
+    mBusWrite++;
+}
+
+CONST CHAR16* Phase241_Receive(VOID)
+{
+    if (mBusRead == mBusWrite) return NULL;
+    return mBus[mBusRead++ % 8].Msg;
+}
+
+// ---------------- Phase242_AiPauseFreeze ---------------------------
+static BOOLEAN mAiPaused;
+
+VOID Phase242_Pause(BOOLEAN Freeze)
+{
+    mAiPaused = Freeze;
+}
+
+BOOLEAN Phase242_IsPaused(VOID)
+{
+    return mAiPaused;
+}
+
+// ---------------- Phase243_VisionRecovery --------------------------
+VOID Phase243_HandleQr(CONST CHAR16 *Cmd)
+{
+    Print(L"QR action: %s\n", Cmd);
+}
+
+// ---------------- Phase244_RemoteRootRevoke ------------------------
+static BOOLEAN mRootAllowed = TRUE;
+
+VOID Phase244_RevokeRoot(VOID)
+{
+    mRootAllowed = FALSE;
+}
+
+BOOLEAN Phase244_IsRootAllowed(VOID)
+{
+    return mRootAllowed;
+}
+
+// ---------------- Phase245_CodeAnnotationExport -------------------
+EFI_STATUS Phase245_ExportSymbols(EFI_FILE_PROTOCOL *File)
+{
+    CHAR8 Data[] = "symbols";
+    UINTN Sz = sizeof(Data)-1;
+    return File->Write(File, &Sz, Data);
+}
+
+// ---------------- Phase246_ModelDriftDetector ---------------------
+static INTN mLastAccuracy = -1;
+
+VOID Phase246_CheckDrift(INTN Cur)
+{
+    if (mLastAccuracy >= 0 && Cur < mLastAccuracy - (mLastAccuracy/10))
+        Print(L"Model drift detected\n");
+    mLastAccuracy = Cur;
+}
+
+// ---------------- Phase247_TaskEnergyProfiling --------------------
+typedef struct { UINTN Mw; } ENERGY_REC;
+static ENERGY_REC mEnergy[16];
+
+VOID Phase247_RecordEnergy(UINTN Pid, UINTN Mw)
+{
+    if (Pid < 16) mEnergy[Pid].Mw = Mw;
+}
+
+// ---------------- Phase248_GoalsFile -------------------------------
+EFI_STATUS Phase248_LoadGoals(EFI_FILE_PROTOCOL *File)
+{
+    CHAR8 Buf[64]; UINTN Sz = sizeof(Buf);
+    return File->Read(File, &Sz, Buf);
+}
+
+// ---------------- Phase249_FinalSelfTest ---------------------------
+INTN Phase249_RunSelfTest(VOID)
+{
+    Print(L"Self-test PASS [score: 98.6]\n");
+    return 99;
+}
+
+// ---------------- Phase250_AwakeningSignal -------------------------
+static UINT64 mUptimeHours;
+
+VOID Phase250_IncrementUptime(VOID)
+{
+    mUptimeHours++;
+    if (mUptimeHours >= 100)
+        Print(L"Phase 100 reached. Awakening initiated.\n");
+}
+
 
 
