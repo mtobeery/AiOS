@@ -749,3 +749,382 @@ void Phase40_Vfree(void *ptr, UINTN pages)
     UINTN idx = ((uintptr_t)ptr - vmm_base)/0x1000ULL;
     for(UINTN j=0;j<pages;j++) vmm_bitmap[(idx+j)/8] &= ~(1<<((idx+j)%8));
 }
+
+/* ========================================================================
+ * Phase 41 - Phase 60 Kernel Features
+ * These phases extend the early kernel with basic memory management,
+ * system call dispatching and very small process support.  They are not
+ * meant to be feature complete but instead provide working logic that can
+ * be built upon by later phases.
+ * ======================================================================*/
+
+/* Helpers for paging manipulation */
+static uint64_t *get_table(uint64_t *table, uint64_t index)
+{
+    if (!(table[index] & 1)) {
+        uint64_t *newtbl = pmm_alloc();
+        if (!newtbl)
+            return NULL;
+        SetMem(newtbl, EFI_PAGE_SIZE, 0);
+        table[index] = ((uint64_t)newtbl) | 3; /* present + write */
+    }
+    return (uint64_t*)(table[index] & ~0xFFFULL);
+}
+
+static void vmm_map(uint64_t virt, uint64_t phys, uint64_t flags)
+{
+    uint64_t pml4_i = (virt >> 39) & 0x1FF;
+    uint64_t pdp_i  = (virt >> 30) & 0x1FF;
+    uint64_t pd_i   = (virt >> 21) & 0x1FF;
+    uint64_t pt_i   = (virt >> 12) & 0x1FF;
+
+    uint64_t *pdp = get_table(pml4, pml4_i);
+    if (!pdp) return;
+    uint64_t *pd  = get_table(pdp, pdp_i);
+    if (!pd) return;
+    uint64_t *pt  = get_table(pd, pd_i);
+    if (!pt) return;
+    pt[pt_i] = (phys & ~0xFFFULL) | (flags & 0xFFFULL);
+}
+
+/* Phase41_MapFramebuffer
+ * Map the GOP frame buffer into the higher half of kernel virtual memory.
+ */
+static UINT64 fb_virt_base = 0xFFFFC00000000000ULL;
+void Phase41_MapFramebuffer(EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop)
+{
+    UINT64 phys = Gop->Mode->FrameBufferBase;
+    UINTN  size = Gop->Mode->FrameBufferSize;
+    for (UINTN off = 0; off < size; off += EFI_PAGE_SIZE)
+        vmm_map(fb_virt_base + off, phys + off, 3);
+    Print(L"Framebuffer mapped at %lx\n", fb_virt_base);
+}
+
+/* Phase42_VirtToPhys
+ * Translate a virtual address using current page tables.
+ */
+EFI_PHYSICAL_ADDRESS Phase42_VirtToPhys(uint64_t virt)
+{
+    uint64_t pml4_i = (virt >> 39) & 0x1FF;
+    uint64_t pdp_i  = (virt >> 30) & 0x1FF;
+    uint64_t pd_i   = (virt >> 21) & 0x1FF;
+    uint64_t pt_i   = (virt >> 12) & 0x1FF;
+
+    if (!(pml4[pml4_i] & 1)) return 0;
+    uint64_t *pdp = (uint64_t*)(pml4[pml4_i] & ~0xFFFULL);
+    if (!(pdp[pdp_i] & 1)) return 0;
+    uint64_t *pd  = (uint64_t*)(pdp[pdp_i] & ~0xFFFULL);
+    if (!(pd[pd_i] & 1)) return 0;
+    uint64_t *pt  = (uint64_t*)(pd[pd_i] & ~0xFFFULL);
+    if (!(pt[pt_i] & 1)) return 0;
+    return (pt[pt_i] & ~0xFFFULL) | (virt & 0xFFFULL);
+}
+
+/* Basic VFS structures for Phase43 */
+typedef struct vnode vnode_t;
+typedef struct vnode_ops {
+    INTN (*read)(vnode_t*, void*, UINTN, UINTN);
+    INTN (*write)(vnode_t*, const void*, UINTN, UINTN);
+} vnode_ops_t;
+
+struct vnode {
+    char         name[32];
+    vnode_t     *parent;
+    vnode_t     *child;
+    vnode_t     *sibling;
+    vnode_ops_t *ops;
+    void        *data;
+};
+
+static vnode_t vfs_root;
+
+static void str_copy(char *dst, const char *src)
+{
+    char *d = dst;
+    while (*src && (UINTN)(d - dst) < 31)
+        *d++ = *src++;
+    *d = 0;
+}
+
+void Phase43_VfsInit(void)
+{
+    SetMem(&vfs_root, sizeof(vnode_t), 0);
+    str_copy(vfs_root.name, "/");
+    vfs_root.parent = &vfs_root;
+    Print(L"VFS initialized\n");
+}
+
+/* Phase44_Syscall infrastructure */
+typedef uint64_t (*syscall_func_t)(uint64_t,uint64_t,uint64_t,uint64_t);
+static syscall_func_t syscall_table[16];
+
+static uint64_t Phase44_Dispatch(uint64_t num, uint64_t a1, uint64_t a2,
+                                 uint64_t a3, uint64_t a4)
+{
+    if (num < 16 && syscall_table[num])
+        return syscall_table[num](a1, a2, a3, a4);
+    return (uint64_t)-1;
+}
+
+__attribute__((naked)) void Phase44_TrapStub(void)
+{
+    __asm__ __volatile__(
+        "push %rdi; push %rsi; push %rdx; push %rcx;\n"
+        "push %r8; push %r9; push %rax;\n"
+        "mov 56(%rsp), %rdi; /* syscall number in saved rax */\n"
+        "mov 48(%rsp), %rsi;\n"
+        "mov 40(%rsp), %rdx;\n"
+        "mov 32(%rsp), %rcx;\n"
+        "mov 24(%rsp), %r8;\n"
+        "mov 16(%rsp), %r9;\n"
+        "call Phase44_Dispatch\n"
+        "pop %rax; pop %r9; pop %r8; pop %rcx; pop %rdx; pop %rsi; pop %rdi;\n"
+        "iretq\n");
+}
+
+void Phase44_InitSyscalls(void)
+{
+    set_idt_gate(0x80, Phase44_TrapStub);
+    Print(L"Syscall trap installed\n");
+}
+
+/* User mode setup - Phase45 */
+void Phase45_EnterUser(void (*entry)(void))
+{
+    uint64_t user_stack = (uint64_t)Phase40_Valloc(1) + EFI_PAGE_SIZE;
+    __asm__ __volatile__(
+        "cli\n"
+        "mov $0x23, %%ax\n"
+        "mov %%ax, %%ds\n"
+        "mov %%ax, %%es\n"
+        "pushq $0x23\n"
+        "pushq %0\n"
+        "pushfq\n"
+        "pushq $0x1B\n"
+        "pushq %1\n"
+        "iretq\n" :: "r"(user_stack), "r"(entry) : "memory");
+}
+
+/* Phase46_LoadElf - very small ELF64 loader for user binaries */
+typedef struct { UINT8 e_ident[16]; UINT16 e_type; UINT16 e_machine; UINT32 e_version;
+                 UINT64 e_entry; UINT64 e_phoff; UINT64 e_shoff; UINT32 e_flags;
+                 UINT16 e_ehsize; UINT16 e_phentsize; UINT16 e_phnum; UINT16 e_shentsize;
+                 UINT16 e_shnum; UINT16 e_shstrndx; } elf64_ehdr_t;
+
+typedef struct { UINT32 p_type; UINT32 p_flags; UINT64 p_offset; UINT64 p_vaddr;
+                 UINT64 p_paddr; UINT64 p_filesz; UINT64 p_memsz; UINT64 p_align; } elf64_phdr_t;
+
+#define ELF_PT_LOAD 1
+
+typedef struct {
+    void    *entry;
+} user_image_t;
+
+bool Phase46_LoadElf(const void *image, user_image_t *out)
+{
+    const elf64_ehdr_t *eh = image;
+    if (eh->e_ident[0] != 0x7F || eh->e_ident[1] != 'E' || eh->e_ident[2] != 'L' ||
+        eh->e_ident[3] != 'F' || eh->e_ident[4] != 2)
+        return false;
+
+    const elf64_phdr_t *ph = (const elf64_phdr_t*)((const uint8_t*)image + eh->e_phoff);
+    for (UINTN i=0;i<eh->e_phnum;i++) {
+        if (ph[i].p_type != ELF_PT_LOAD) continue;
+        UINTN pages = EFI_SIZE_TO_PAGES(ph[i].p_memsz);
+        void *dst = Phase40_Valloc(pages);
+        if (!dst) return false;
+        CopyMem(dst, (const uint8_t*)image + ph[i].p_offset, ph[i].p_filesz);
+        if (ph[i].p_memsz > ph[i].p_filesz)
+            SetMem((uint8_t*)dst + ph[i].p_filesz,
+                   ph[i].p_memsz - ph[i].p_filesz, 0);
+        vmm_map((uint64_t)ph[i].p_vaddr, Phase42_VirtToPhys((uint64_t)dst), 7);
+    }
+    out->entry = (void*)(UINTN)eh->e_entry;
+    return true;
+}
+
+/* Phase47_PageFaultHandler - handle user mode faults */
+__attribute__((interrupt))
+void Phase47_PageFaultHandler(InterruptFrame *f, uint64_t error)
+{
+    uint64_t addr; __asm__ volatile("mov %%cr2,%0" : "=r"(addr));
+    Print(L"Page fault at %lx err=%lx\n", addr, error);
+    (void)f; while(1);
+}
+
+/* Basic process structure and simple scheduler for Phase48/49 */
+typedef enum { PROC_READY, PROC_RUNNING, PROC_WAIT, PROC_ZOMBIE } proc_state_t;
+
+typedef struct process {
+    uint32_t    pid;
+    proc_state_t state;
+    uint64_t   *cr3;
+    void       *stack;
+    void       *entry;
+    struct process *next;
+} process_t;
+
+static process_t *proc_list = NULL;
+static process_t *current_proc = NULL;
+static uint32_t   next_pid = 1;
+
+process_t *Phase48_CreateProcess(void (*entry)(void))
+{
+    process_t *p = kmalloc(sizeof(process_t));
+    if (!p) return NULL;
+    p->pid = next_pid++;
+    p->state = PROC_READY;
+    p->cr3 = pml4;
+    p->stack = Phase40_Valloc(1); /* kernel stack */
+    p->entry = entry;
+    p->next = proc_list;
+    proc_list = p;
+    return p;
+}
+
+void Phase49_SchedulerTick(void)
+{
+    if (!current_proc)
+        current_proc = proc_list;
+    else
+        current_proc = current_proc->next ? current_proc->next : proc_list;
+}
+
+/* CPU local data using GS for Phase50 */
+typedef struct {
+    uint32_t cpu_id;
+    process_t *current;
+} cpu_local_t;
+
+static cpu_local_t cpu0_local;
+
+void Phase50_InitCpuLocal(uint32_t id)
+{
+    cpu0_local.cpu_id = id;
+    __asm__ volatile("wrmsr" :: "c"(0xC0000101), "a"((uint32_t)(uintptr_t)&cpu0_local),
+                     "d"((uint32_t)(((uint64_t)&cpu0_local)>>32)));
+}
+
+/* Syscall implementations for Phase51 and Phase52 */
+static uint64_t sys_write_console(uint64_t msg, uint64_t, uint64_t, uint64_t)
+{
+    const char *m = (const char*)msg;
+    while (*m)
+        serial_putc(*m++);
+    serial_putc('\n');
+    return 0;
+}
+
+static uint64_t sys_yield(uint64_t, uint64_t, uint64_t, uint64_t)
+{
+    Phase49_SchedulerTick();
+    return 0;
+}
+
+void Phase51_RegisterSyscalls(void)
+{
+    syscall_table[0] = sys_yield;         /* syscall 0 - yield */
+    syscall_table[1] = sys_write_console; /* syscall 1 - write_console */
+}
+
+/* Phase53_UserStack with guard page */
+void *Phase53_AllocUserStack(void)
+{
+    void *guard = pmm_alloc();
+    void *stack = pmm_alloc();
+    if (!guard || !stack) return NULL;
+    vmm_map((uint64_t)stack, (uint64_t)stack, 7);
+    return (uint8_t*)stack + EFI_PAGE_SIZE;
+}
+
+/* Phase54 - /dev/null node */
+static INTN null_read(vnode_t *n, void *b, UINTN s, UINTN o) { (void)n; (void)b; (void)s; (void)o; return 0; }
+static INTN null_write(vnode_t *n, const void *b, UINTN s, UINTN o) { (void)n; (void)b; (void)o; return (INTN)s; }
+
+void Phase54_CreateDevNull(void)
+{
+    vnode_t *node = kmalloc(sizeof(vnode_t));
+    if (!node) return;
+    str_copy(node->name, "null");
+    static vnode_ops_t ops = { null_read, null_write };
+    node->ops = &ops;
+    node->parent = &vfs_root;
+    node->sibling = vfs_root.child;
+    vfs_root.child = node;
+}
+
+/* Phase55 - simple /proc status */
+static INTN proc_status_read(vnode_t *n, void *buf, UINTN sz, UINTN off)
+{
+    process_t *p = n->data;
+    CHAR8 tmp[64];
+    UINTN len = AsciiSPrint(tmp, sizeof(tmp), "pid=%u state=%u\n", p->pid, p->state);
+    if (off >= len) return 0;
+    UINTN copy = len - off < sz ? len - off : sz;
+    CopyMem(buf, tmp + off, copy);
+    return copy;
+}
+
+void Phase55_CreateProcEntry(process_t *p)
+{
+    vnode_t *dir = kmalloc(sizeof(vnode_t));
+    str_copy(dir->name, "proc");
+    dir->parent = &vfs_root;
+    dir->sibling = vfs_root.child;
+    vfs_root.child = dir;
+
+    vnode_t *st = kmalloc(sizeof(vnode_t));
+    str_copy(st->name, "status");
+    static vnode_ops_t ops = { proc_status_read, NULL };
+    st->ops = &ops;
+    st->data = p;
+    st->parent = dir;
+    dir->child = st;
+}
+
+/* Phase56 - minimal init process */
+void Phase56_InitProcess(void)
+{
+    process_t *init = Phase48_CreateProcess(NULL);
+    Phase55_CreateProcEntry(init);
+    Print(L"Init process PID %u created\n", init->pid);
+}
+
+/* Phase57 - kfork syscall */
+static uint64_t sys_kfork(uint64_t, uint64_t, uint64_t, uint64_t)
+{
+    process_t *child = Phase48_CreateProcess(current_proc->entry);
+    if (!child) return (uint64_t)-1;
+    return child->pid;
+}
+
+/* Phase58 - simplistic COW page fault handling */
+static void handle_cow(uint64_t addr)
+{
+    void *newp = pmm_alloc();
+    CopyMem(newp, (void*)(addr & ~0xFFFULL), EFI_PAGE_SIZE);
+    vmm_map(addr & ~0xFFFULL, (uint64_t)newp, 7);
+}
+
+/* Phase59 - waitpid syscall */
+static uint64_t sys_waitpid(uint64_t pid, uint64_t, uint64_t, uint64_t)
+{
+    (void)pid; /* not fully implemented */
+    return 0;
+}
+
+/* Phase60 - exit syscall */
+static uint64_t sys_exit(uint64_t code, uint64_t, uint64_t, uint64_t)
+{
+    current_proc->state = PROC_ZOMBIE;
+    (void)code;
+    Phase49_SchedulerTick();
+    return 0;
+}
+
+void Phase60_RegisterExit(void)
+{
+    syscall_table[2] = sys_kfork;
+    syscall_table[3] = sys_waitpid;
+    syscall_table[4] = sys_exit;
+}
