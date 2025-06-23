@@ -1,0 +1,4065 @@
+# AiOS Project – Phase 01 Task Set
+# Phase Title: Core Conscious Boot + Kernel Construction
+# Author: Mahmoud Shaher Shehadeh Tobeery
+# Version: v1.0
+# Date: 2025-06-23
+# Hardware Target: Dell G15 5511 (Intel i7-11800H, 32GB DDR4, RTX 3050 Ti, TPM 2.0, NVMe Gen4)
+# Description:
+#   These 250 tasks are part of the foundational phase for the AiOS operating system.
+#   This phase covers: bootloader, kernel setup, userland, filesystem, AI layer, telemetry, trust, and security.
+# Format:
+#   Task Number : XXX
+#   Task Name : XXXX
+#   Effected C Files : File(s)
+#   Task Description : Details
+#   Tasks Codex Instructions : Prompt for Codex
+#   Task Suggested Test Method : Validation steps
+#   Notes : Optional
+# -------------------------
+# AiOS Phase 01 – Core Conscious Boot + Kernel Task List
+# Version: v1.0
+# Author: Mahmoud Shaher Shehadeh Tobeery
+# Platform: Dell G15 5511 (Intel i7-11800H, 32GB RAM, RTX 3050 Ti, TPM 2.0)
+# Description:
+#   This file contains 250 structured system tasks for Phase 01 of the AiOS operating system.
+#   Each task is designed to build a modular, AI-native, secure, and consciousness-aware OS.
+#   Format:
+#     Task Number : <3-digit ID>
+#     Task Name : <Short name>
+#     Effected C Files : <Path(s)>
+#     Task Description : <Detailed explanation>
+#     Tasks Codex Instructions : <Exactly what Codex should do>
+#     Task Suggested Test Method : <How to verify>
+#     Notes : <Any extra metadata or links>
+
+# === BEGIN TASKS ===
+
+
+Task Number              : 001
+Task Name                : Scaffold UEFI Application
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Create a minimal UEFI application using `efi_main`. Initialize the EFI system table and print a boot message.
+
+Tasks Codex Instructions :
+  Write a UEFI Class 3+ application that implements `efi_main`, uses `InitializeLib`, and prints 'AiOS Bootloader Started!' with `Print()`. Use gnu-efi or edk2 headers.
+
+Task Suggested Test Method :
+  Compile BOOTX64.EFI and run in UEFI shell. Check that the message appears.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 002
+Task Name                : Create Bootloader Makefile
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/Makefile
+Task Description         : 
+  Generate a Makefile to build the UEFI app into BOOTX64.EFI using `x86_64-elf-gcc`.
+
+Tasks Codex Instructions :
+  Write a Makefile that builds main.c with `-ffreestanding -nostdlib`, links to gnu-efi or edk2, and produces BOOTX64.EFI.
+
+Task Suggested Test Method :
+  Run `make` and verify BOOTX64.EFI is created.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 003
+Task Name                : Open kernel.elf Using UEFI File Protocol
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Use UEFI filesystem protocol to open the `kernel.elf` file on the ESP partition.
+
+Tasks Codex Instructions :
+  Use EFI_SIMPLE_FILE_SYSTEM_PROTOCOL and EFI_FILE_PROTOCOL to locate and open kernel.elf.
+
+Task Suggested Test Method :
+  Print success/failure when opening the file.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 004
+Task Name                : Read and Validate ELF Header
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Read the ELF header from kernel.elf and confirm it's a valid ELF64 binary.
+
+Tasks Codex Instructions :
+  Read the ELF64_Ehdr and verify magic, type, class = 64-bit, and machine = x86_64.
+
+Task Suggested Test Method :
+  Print 'Valid ELF64' or an error message.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 005
+Task Name                : Parse ELF Program Headers
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Read program headers and identify all PT_LOAD segments to load.
+
+Tasks Codex Instructions :
+  Loop over ELF64_Phdr structures and select PT_LOAD entries. Store their offsets and sizes.
+
+Task Suggested Test Method :
+  Log number of loadable segments found.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 006
+Task Name                : Allocate Memory for Kernel Segments
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Allocate pages using `AllocatePages` for each PT_LOAD segment.
+
+Tasks Codex Instructions :
+  Use segment virtual address and size to allocate aligned memory with `AllocatePages`.
+
+Task Suggested Test Method :
+  Print memory addresses of allocated regions.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 007
+Task Name                : Copy Segment Data from File to RAM
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Read segment data from kernel.elf and copy into the allocated RAM regions.
+
+Tasks Codex Instructions :
+  Seek to segment file offset, read data, memcpy to allocated memory. Zero out uninitialized area.
+
+Task Suggested Test Method :
+  Dump checksum or byte pattern of loaded segments.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 008
+Task Name                : Setup LOADER_PARAMS Struct
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/loader_structs.h
+Task Description         : 
+  Create a struct to hold memory map, framebuffer info, kernel load base, etc.
+
+Tasks Codex Instructions :
+  Define a `LOADER_PARAMS` struct with fields like mem_map_ptr, map_size, kernel_base, etc.
+
+Task Suggested Test Method :
+  Print address and size of LOADER_PARAMS after fill.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 009
+Task Name                : Retrieve and Store UEFI Memory Map
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Call `GetMemoryMap()` and store it in `LOADER_PARAMS` to pass to the kernel.
+
+Tasks Codex Instructions :
+  Use `GetMemoryMap` to retrieve entries and record DescriptorSize, MapKey, MemoryMapSize.
+
+Task Suggested Test Method :
+  Print number of memory map entries found.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 010
+Task Name                : Jump to Kernel Entry Point
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Transfer control to kernel by casting entry address to a function pointer.
+
+Tasks Codex Instructions :
+  Jump to kernel entry using ((void(*)(LOADER_PARAMS*))entry)(params);
+
+Task Suggested Test Method :
+  Print 'Jumping to kernel...' then check serial logs from kernel.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 011
+Task Name                : Compute SHA-256 Hash of kernel.elf
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Use EFI_TCG2_PROTOCOL to hash kernel.elf with SHA-256.
+
+Tasks Codex Instructions :
+  Call HashLogExtendEvent with kernel file contents, using PCR[4].
+
+Task Suggested Test Method :
+  Print the resulting hash.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 012
+Task Name                : Extend Hash to TPM PCR[4]
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Log the hash from kernel.elf into TPM PCR[4] using HashLogExtendEvent.
+
+Tasks Codex Instructions :
+  Construct TCG_PCR_EVENT_HDR and log the event with HashLogExtendEvent.
+
+Task Suggested Test Method :
+  Verify with TPM tool or log output.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 013
+Task Name                : Verify Signature Against Secure Boot DB
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Validate kernel.elf's signature using Secure Boot public key database (db).
+
+Tasks Codex Instructions :
+  Use EFI_SECURITY2_PROTOCOL or EFI_IMAGE_SECURITY_DATABASE to check PE signature.
+
+Task Suggested Test Method :
+  If invalid, print 'Signature check failed' and halt.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 014
+Task Name                : Handle Verification Failure
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Halt bootloader and show error if signature/hash fails.
+
+Tasks Codex Instructions :
+  Call `Print()` with reason and enter infinite loop.
+
+Task Suggested Test Method :
+  Test with invalid kernel.elf and confirm it stops.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 015
+Task Name                : Initialize Graphics Output Protocol
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Access GOP to prepare framebuffer and retrieve resolution info.
+
+Tasks Codex Instructions :
+  Locate EFI_GRAPHICS_OUTPUT_PROTOCOL and get ModeInfo and FrameBufferBase.
+
+Task Suggested Test Method :
+  Print resolution and framebuffer pointer.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 016
+Task Name                : Render Test Rectangle in Framebuffer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Draw a basic color box or solid pattern in the center of the screen.
+
+Tasks Codex Instructions :
+  Use GOP to write RGB pixels to the framebuffer.
+
+Task Suggested Test Method :
+  Verify pattern shows during boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 017
+Task Name                : Fallback to Text Mode if GOP Fails
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/main.c
+Task Description         : 
+  Fallback to `Print()` if GOP is not found.
+
+Tasks Codex Instructions :
+  Check for NULL GOP pointer and use Print as fallback.
+
+Task Suggested Test Method :
+  Test on UEFI without GOP and verify text boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 018
+Task Name                : Read CPUID and RAM Size
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/identity.c
+Task Description         : 
+  Use inline assembly to get CPU vendor, family, and RAM size.
+
+Tasks Codex Instructions :
+  Call CPUID and read top-of-memory from UEFI memory map.
+
+Task Suggested Test Method :
+  Print CPU ID string and total RAM.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 019
+Task Name                : Scan PCI Bus for GPU ID
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/identity.c
+Task Description         : 
+  Use PCI protocol to find GPU vendor/device ID.
+
+Tasks Codex Instructions :
+  Locate EFI_PCI_IO_PROTOCOL and read class codes for display device.
+
+Task Suggested Test Method :
+  Print GPU vendor (e.g., NVIDIA, Intel).
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 020
+Task Name                : Generate AI_BOOT_DNA Hash and Print
+Subsystem                : Bootloader / Kernel
+Effected C Files         : /bootloader/identity.c
+Task Description         : 
+  Combine CPU ID, RAM, GPU ID, and TPM data into a buffer and hash with SHA-256.
+
+Tasks Codex Instructions :
+  Use EFI_HASH2_PROTOCOL to compute SHA-256 of identity data, then Print().
+
+Task Suggested Test Method :
+  Verify hash output format: 'AI_BOOT_DNA: <hex>'
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 21
+Task Name                : Setup Initial Kernel Entry Point
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/entry.asm, kernel/entry.c
+Task Description         : 
+  Define a 64-bit kernel entry point from bootloader jump. Setup stack, clear BSS, and call `kernel_main()`.
+
+Tasks Codex Instructions :
+  Write assembly that sets up stack, clears BSS segment, enables long mode, then calls C function `kernel_main()`.
+
+Task Suggested Test Method :
+  Boot into kernel.elf, confirm `kernel_main()` executes and prints 'Kernel Loaded' via serial/log.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 22
+Task Name                : Initialize Serial Port for Logging
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/log.c, kernel/serial.c
+Task Description         : 
+  Enable early serial output via COM1 (I/O port 0x3F8) for debug logs.
+
+Tasks Codex Instructions :
+  Write basic init_serial() and put_char() functions using outb/inb for COM1.
+
+Task Suggested Test Method :
+  Boot and confirm serial output via QEMU or real UART. Should show kernel logs.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 23
+Task Name                : Setup GDT for Kernel
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/gdt.c, kernel/gdt.h
+Task Description         : 
+  Create and load a Global Descriptor Table with kernel and user segments.
+
+Tasks Codex Instructions :
+  Define GDT descriptors, load with lgdt, and set CS/DS in protected mode.
+
+Task Suggested Test Method :
+  Check GDT base via `sgdt`, confirm CS/DS are using proper GDT selectors.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 24
+Task Name                : Setup IDT with Default ISRs
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/idt.c, kernel/idt.h, kernel/isr.c
+Task Description         : 
+  Build Interrupt Descriptor Table with handlers for 0–31 exceptions.
+
+Tasks Codex Instructions :
+  Define IDT entries, handlers (divide by zero, page fault, etc.), load with lidt.
+
+Task Suggested Test Method :
+  Trigger divide-by-zero and confirm ISR handler is invoked.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 25
+Task Name                : Implement ISR Handler Stubs
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/isr.c, kernel/isr.h
+Task Description         : 
+  Create basic handler stubs for all exceptions with minimal fault reporting.
+
+Tasks Codex Instructions :
+  Write C functions that log interrupt number and error code.
+
+Task Suggested Test Method :
+  Confirm each fault triggers correct handler (e.g. INT 3).
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 26
+Task Name                : Enable Paging - Identity Map First 4 GB
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/mmu.c
+Task Description         : 
+  Create 4-level page tables and identity-map first 4GB RAM.
+
+Tasks Codex Instructions :
+  Setup PML4, PDPT, PD, PT. Use bit flags (present, writable). Load CR3.
+
+Task Suggested Test Method :
+  Boot and verify kernel still runs after paging is on.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 27
+Task Name                : Enable Write Protect Bit in CR0
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/mmu.c
+Task Description         : 
+  Set CR0.WP to enforce read-only kernel code pages.
+
+Tasks Codex Instructions :
+  Set bit 16 of CR0 after paging is enabled.
+
+Task Suggested Test Method :
+  Attempt to write to read-only page — trigger page fault.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 28
+Task Name                : Create Basic Physical Page Allocator
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/pmm.c, kernel/pmm.h
+Task Description         : 
+  Build a bitmap allocator to track free/used 4K pages.
+
+Tasks Codex Instructions :
+  Parse memory map, mark usable regions. Provide alloc/free functions.
+
+Task Suggested Test Method :
+  Test allocator via alloc/free sequence. Verify page reuse.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 29
+Task Name                : Initialize Kernel Heap (kmalloc/kfree)
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/heap.c, kernel/heap.h
+Task Description         : 
+  Create heap using bump allocator or linked-list strategy for dynamic allocation.
+
+Tasks Codex Instructions :
+  Implement kmalloc(size) and kfree(ptr). Backed by page allocator.
+
+Task Suggested Test Method :
+  Test allocations and frees; log address ranges.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 30
+Task Name                : Detect All CPUs via ACPI MADT
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/smp.c
+Task Description         : 
+  Parse MADT table to count available CPU cores.
+
+Tasks Codex Instructions :
+  Walk ACPI MADT structure and extract LAPIC IDs.
+
+Task Suggested Test Method :
+  Print CPU core count during boot log.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 031
+Task Name                : Initialize Local APIC and Enable Interrupts
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/apic.c, kernel/apic.h
+Task Description         : 
+  Map and enable the local APIC for the bootstrap processor (BSP).
+
+Tasks Codex Instructions :
+  Map LAPIC base at 0xFEE00000. Write to Spurious Interrupt Vector register to enable.
+
+Task Suggested Test Method :
+  Use `rdmsr` to get LAPIC base, verify with `Print()`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 032
+Task Name                : Parse ACPI Tables (RSDP → XSDT → FADT)
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/acpi.c
+Task Description         : 
+  Parse ACPI Root System Description Pointer and navigate to key system tables.
+
+Tasks Codex Instructions :
+  Locate RSDP in EBDA or BIOS ROM range, validate checksum, then find XSDT and FADT.
+
+Task Suggested Test Method :
+  Print addresses of XSDT and FADT if successful.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 033
+Task Name                : Enable APIC Timer Interrupt
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/apic.c
+Task Description         : 
+  Program the APIC timer and enable IRQ delivery.
+
+Tasks Codex Instructions :
+  Set divide config, initial count, and vector in Local Vector Table.
+
+Task Suggested Test Method :
+  Check for periodic interrupt firing.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 034
+Task Name                : Implement Basic Interrupt Handler for Timer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/irq.c, kernel/timer.c
+Task Description         : 
+  Create a handler for the APIC timer interrupt and increment a tick counter.
+
+Tasks Codex Instructions :
+  Register IRQ handler for vector used by APIC timer, update ticks.
+
+Task Suggested Test Method :
+  Print tick count every 100 interrupts.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 035
+Task Name                : Detect and Initialize All CPU Cores (SMP)
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/smp.c
+Task Description         : 
+  Send INIT and SIPI signals to secondary CPUs using IPI.
+
+Tasks Codex Instructions :
+  Read LAPIC IDs from MADT, issue IPIs to bring up cores.
+
+Task Suggested Test Method :
+  Print core IDs and confirm entry into SMP trampoline.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 036
+Task Name                : Setup Trampoline Code for AP Startup
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/smp_trampoline.asm
+Task Description         : 
+  Write assembly trampoline that switches to long mode and jumps to SMP entry.
+
+Tasks Codex Instructions :
+  Setup temporary GDT, page tables, then jump to C entry point.
+
+Task Suggested Test Method :
+  Boot on multi-core system and verify each CPU logs entry.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 037
+Task Name                : Implement Spinlock Synchronization
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/sync.c, kernel/sync.h
+Task Description         : 
+  Add atomic spinlocks to coordinate access between CPUs.
+
+Tasks Codex Instructions :
+  Use `xchg` or `cmpxchg` to implement lock() and unlock().
+
+Task Suggested Test Method :
+  Write multithreaded test to validate lock correctness.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 038
+Task Name                : Create Kernel Logger Subsystem
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/log.c
+Task Description         : 
+  Add log levels (INFO, WARN, ERROR) with serial + framebuffer output.
+
+Tasks Codex Instructions :
+  Define log_log(level, message). Color-coded framebuffer printing.
+
+Task Suggested Test Method :
+  Boot and check logs include level prefixes.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 039
+Task Name                : Add Panic Handler with Stack Dump
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/panic.c
+Task Description         : 
+  On critical error, print panic message and stack trace.
+
+Tasks Codex Instructions :
+  Walk stack with saved base pointer, print return addresses.
+
+Task Suggested Test Method :
+  Force panic and confirm correct trace.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 040
+Task Name                : Create Paging-Aware Virtual Allocator
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/vmm.c
+Task Description         : 
+  Implement `valloc(size)` and `vfree()` using 4KB and 2MB pages.
+
+Tasks Codex Instructions :
+  Track virtual address ranges and allocate via page table mappings.
+
+Task Suggested Test Method :
+  Check for alignment, test via kernel heap expansion.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 041
+Task Name                : Map Framebuffer to Virtual Memory
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/gfx_map.c
+Task Description         : 
+  Remap GOP framebuffer address into high kernel virtual space.
+
+Tasks Codex Instructions :
+  Use `vmm_map()` to create identity mapping or custom offset.
+
+Task Suggested Test Method :
+  Access framebuffer via new address and test drawing pixels.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 042
+Task Name                : Add Virtual to Physical Address Translation
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/mmu_tools.c
+Task Description         : 
+  Given a virtual address, walk page tables to resolve physical address.
+
+Tasks Codex Instructions :
+  Implement `virt_to_phys()` using PML4, PDP, PD, PT indexes.
+
+Task Suggested Test Method :
+  Log virtual and resolved physical address for kernel heap base.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 043
+Task Name                : Initialize Basic VFS Structure
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/vfs.c
+Task Description         : 
+  Create virtual filesystem tree with mount points and path traversal.
+
+Tasks Codex Instructions :
+  Define vnode struct, operations, and init rootfs node.
+
+Task Suggested Test Method :
+  Print tree after mounting memory fs to '/'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 044
+Task Name                : Add Syscall Table and Trap Stub
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c, kernel/syscall.h
+Task Description         : 
+  Create syscall interface via interrupt/trap with syscall number dispatch.
+
+Tasks Codex Instructions :
+  Install syscall vector and switch based on syscall number.
+
+Task Suggested Test Method :
+  Write syscall_log(int level, const char *msg) and test.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 045
+Task Name                : Setup User Mode Stack and Code Pages
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/user.c
+Task Description         : 
+  Prepare ring 3 code and stack segments and switch to user mode.
+
+Tasks Codex Instructions :
+  Setup segment selectors, IRET frame, push code/stack addresses.
+
+Task Suggested Test Method :
+  Run sample usermode loop and print log from syscall.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 046
+Task Name                : Add ELF Loader for User Binaries
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/loader.c
+Task Description         : 
+  Support loading ELF64 binaries into userspace memory.
+
+Tasks Codex Instructions :
+  Parse ELF header, map PT_LOAD segments, jump to entry.
+
+Task Suggested Test Method :
+  Load and exec a simple test binary that syscalls `log()`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 047
+Task Name                : Enable Ring 3 Page Fault Handling
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/idt.c, kernel/fault.c
+Task Description         : 
+  Catch and handle page faults triggered in userspace.
+
+Tasks Codex Instructions :
+  Print faulting address, error code, and fix or kill process.
+
+Task Suggested Test Method :
+  Force page fault from user binary and trace response.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 048
+Task Name                : Support Basic Process Struct and Scheduler
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/proc.c, kernel/proc.h, kernel/sched.c
+Task Description         : 
+  Create `struct process` with PID, regs, state, and page tables.
+
+Tasks Codex Instructions :
+  Initialize kernel process and one test userspace process.
+
+Task Suggested Test Method :
+  Print task list at boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 049
+Task Name                : Add Round-Robin Scheduler with Timer Tick
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/sched.c
+Task Description         : 
+  Switch between processes every N ticks of timer interrupt.
+
+Tasks Codex Instructions :
+  Save/restore registers and CR3, rotate run queue.
+
+Task Suggested Test Method :
+  Run two test user apps and verify interleaved logs.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 050
+Task Name                : Implement CPU-Local Data Area
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/cpu.c
+Task Description         : 
+  Setup per-CPU structures with stack, ID, scheduler state.
+
+Tasks Codex Instructions :
+  Use GS base or segment registers to access local storage.
+
+Task Suggested Test Method :
+  Log from each CPU core its own `cpu_id` and status.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 051
+Task Name                : Implement Syscall: write_console
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c
+Task Description         : 
+  Add a syscall that lets user processes print to console via ring 0 logging.
+
+Tasks Codex Instructions :
+  In syscall handler, switch on syscall number and dispatch to write_console(msg).
+
+Task Suggested Test Method :
+  Write userspace program to syscall 'Hello from user!' and log it in kernel.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 052
+Task Name                : Add Basic Scheduler Yield Syscall
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c
+Task Description         : 
+  Let processes voluntarily yield CPU using syscall 1.
+
+Tasks Codex Instructions :
+  Add handler for syscall_yield() that marks process as ready and invokes scheduler.
+
+Task Suggested Test Method :
+  Confirm yield switches to next task in round robin.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 053
+Task Name                : Map User Stack with Guard Page
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/user.c
+Task Description         : 
+  Allocate user stack with a guard page to detect overflows.
+
+Tasks Codex Instructions :
+  Allocate 2 pages: mark top as not-present, bottom as writable stack.
+
+Task Suggested Test Method :
+  Cause stack overflow and verify page fault triggers correctly.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 054
+Task Name                : Create /dev/null Virtual Node
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/vfs.c, kernel/devfs.c
+Task Description         : 
+  Add device node /dev/null that silently discards writes and returns EOF.
+
+Tasks Codex Instructions :
+  Register a VFS handler that always returns 0 or no-op.
+
+Task Suggested Test Method :
+  Redirect user process output to /dev/null and verify silence.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 055
+Task Name                : Add Support for /proc File Interface
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/procfs.c
+Task Description         : 
+  Create pseudo-files under /proc for each process: /proc/<pid>/status.
+
+Tasks Codex Instructions :
+  Expose PID, state, CPU ID, and memory usage.
+
+Task Suggested Test Method :
+  Test using a userland cat tool to read /proc entries.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 056
+Task Name                : Create Userland Init Process
+Subsystem                : Bootloader / Kernel
+Effected C Files         : user/init.c
+Task Description         : 
+  Compile and load a minimal user app as PID 1 that spawns child processes.
+
+Tasks Codex Instructions :
+  Have init() syscall fork two children that call log().
+
+Task Suggested Test Method :
+  See child processes log output interleaved in kernel logs.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 057
+Task Name                : Implement kfork() System Call
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/proc.c
+Task Description         : 
+  Add `sys_kfork()` to duplicate current process's memory and registers.
+
+Tasks Codex Instructions :
+  Create new process, copy page table, set return value to 0 in child.
+
+Task Suggested Test Method :
+  Call kfork from init and observe two processes with different PID.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 058
+Task Name                : Enable Copy-on-Write Forking
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/mmu.c, kernel/proc.c
+Task Description         : 
+  Optimize fork by marking shared pages as read-only and cloning on write.
+
+Tasks Codex Instructions :
+  On page fault, check if page is COW and duplicate on write.
+
+Task Suggested Test Method :
+  Fork a process, write from both parent/child and verify memory splits.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 059
+Task Name                : Add Waitpid Syscall
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c, kernel/proc.c
+Task Description         : 
+  Let parent wait on child to finish and collect exit status.
+
+Tasks Codex Instructions :
+  Block parent in wait queue until child calls exit().
+
+Task Suggested Test Method :
+  Log parent wakeup and status code from child.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 060
+Task Name                : Implement Exit System Call
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c
+Task Description         : 
+  Terminate process, free memory and remove from scheduler.
+
+Tasks Codex Instructions :
+  Call exit() in userland and verify kernel reclaims resources.
+
+Task Suggested Test Method :
+  Run loop of fork+exit and monitor process table shrinking.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 061
+Task Name                : Create Kernel Page Allocator Debug Tool
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/debug.c
+Task Description         : 
+  Log allocated pages and track live memory regions with labels.
+
+Tasks Codex Instructions :
+  Dump page usage to serial or VFS pseudo-file.
+
+Task Suggested Test Method :
+  Print memory usage before and after user process exits.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 062
+Task Name                : Enable Framebuffer Console Output
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/fb_console.c
+Task Description         : 
+  Print text to screen via direct framebuffer access using GOP.
+
+Tasks Codex Instructions :
+  Use fixed-size font to render ASCII characters.
+
+Task Suggested Test Method :
+  Boot kernel and print colored log lines to screen (fallback from serial).
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 063
+Task Name                : Add Timebase Using PIT or HPET
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/time.c
+Task Description         : 
+  Use hardware timers to implement a reliable timebase for ticks.
+
+Tasks Codex Instructions :
+  Read HPET or fallback to PIT and calibrate timer ticks.
+
+Task Suggested Test Method :
+  Print milliseconds since boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 064
+Task Name                : Implement Sleep System Call
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c, kernel/sched.c
+Task Description         : 
+  Add syscall that blocks current process for N milliseconds.
+
+Tasks Codex Instructions :
+  Track wakeup time and reinsert into scheduler later.
+
+Task Suggested Test Method :
+  Run test loop of sleep/log/sleep/log and measure intervals.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 065
+Task Name                : Detect and Log PCI Devices
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/pci.c
+Task Description         : 
+  Walk PCI bus and log vendor/device ID of all connected devices.
+
+Tasks Codex Instructions :
+  Scan all buses/devices/functions and use config space access.
+
+Task Suggested Test Method :
+  Print GPU, storage, and network device IDs at boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 066
+Task Name                : Initialize AHCI or NVMe Controller
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/storage.c
+Task Description         : 
+  Detect and setup AHCI/NVMe driver to access block device.
+
+Tasks Codex Instructions :
+  Parse device BAR, identify command ring, enable DMA.
+
+Task Suggested Test Method :
+  Log detection of first block device (e.g. Samsung 990 Pro).
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 067
+Task Name                : Implement Read Sector via NVMe
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/storage.c
+Task Description         : 
+  Read logical block from NVMe into kernel memory using command submission.
+
+Tasks Codex Instructions :
+  Queue read command and poll completion queue.
+
+Task Suggested Test Method :
+  Dump contents of sector 0 (MBR or GPT).
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 068
+Task Name                : Map Storage Device to /dev/sda
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/vfs.c, kernel/block.c
+Task Description         : 
+  Expose detected NVMe/AHCI disk as /dev/sda through block device abstraction.
+
+Tasks Codex Instructions :
+  Create vnode for /dev/sda and register read/write ops.
+
+Task Suggested Test Method :
+  Use test app to read /dev/sda and dump bytes to console.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 069
+Task Name                : Implement Simple RAM Filesystem
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ramfs.c
+Task Description         : 
+  Create a memory-backed filesystem mounted at /tmp.
+
+Tasks Codex Instructions :
+  Use malloc'd structures to represent files, dirs, data blocks.
+
+Task Suggested Test Method :
+  Write test program that creates and writes to /tmp/hello.txt.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 070
+Task Name                : Support File Create/Open Syscalls
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c, kernel/vfs.c
+Task Description         : 
+  Add open/create syscalls that resolve pathnames to vnode and return FD.
+
+Tasks Codex Instructions :
+  Allocate file descriptor, set offset, mode flags.
+
+Task Suggested Test Method :
+  Test user app that creates /tmp/test.txt and writes logs.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 071
+Task Name                : Enable IRQ Routing for NVMe and Devices
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/irq.c
+Task Description         : 
+  Route hardware interrupts to the proper device drivers (NVMe, timers, network).
+
+Tasks Codex Instructions :
+  Use PCI interrupt pin and APIC vector mapping to assign IRQs to NVMe/AHCI.
+
+Task Suggested Test Method :
+  Generate disk access and verify IRQ log appears.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 072
+Task Name                : Add File Read/Write Syscalls
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c
+Task Description         : 
+  Implement `read(fd, buf, len)` and `write(fd, buf, len)` syscall interfaces.
+
+Tasks Codex Instructions :
+  Resolve FD to file, call appropriate VFS ops, update offset.
+
+Task Suggested Test Method :
+  Test userland program that logs to /tmp/test.txt and reads it back.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 073
+Task Name                : Add Gettimeofday Syscall
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c, kernel/time.c
+Task Description         : 
+  Allow user processes to query current system time in ms since boot.
+
+Tasks Codex Instructions :
+  Expose syscall number and return timestamp in struct.
+
+Task Suggested Test Method :
+  User app prints timestamp every second.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 074
+Task Name                : Implement Pipe IPC Mechanism
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/pipe.c
+Task Description         : 
+  Create anonymous pipes for inter-process communication.
+
+Tasks Codex Instructions :
+  Implement read/write ring buffers and file-like interface.
+
+Task Suggested Test Method :
+  Fork two processes and pipe logs from child to parent.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 075
+Task Name                : Add Dup and Dup2 Syscalls
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c
+Task Description         : 
+  Implement `dup(fd)` and `dup2(old, new)` for FD remapping.
+
+Tasks Codex Instructions :
+  Ensure shared offset for dup’d descriptors, handle invalid cases.
+
+Task Suggested Test Method :
+  Redirect stdout to file and pipe.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 076
+Task Name                : Implement Select/Poll System Call
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c, kernel/poll.c
+Task Description         : 
+  Allow processes to wait on multiple FDs (files, pipes, sockets).
+
+Tasks Codex Instructions :
+  Support timeout and return readable/writable FD sets.
+
+Task Suggested Test Method :
+  Test app reads from stdin or socket when ready.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 077
+Task Name                : Initialize Intel Ethernet Controller
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/ethernet.c
+Task Description         : 
+  Detect Intel I219-V or similar onboard NIC, initialize MMIO and descriptors.
+
+Tasks Codex Instructions :
+  Read PCI BAR, map registers, reset controller, enable RX/TX.
+
+Task Suggested Test Method :
+  Print MAC address and link status.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 078
+Task Name                : Implement ARP Protocol Handler
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/arp.c
+Task Description         : 
+  Respond to and issue ARP requests for local IP to MAC resolution.
+
+Tasks Codex Instructions :
+  Maintain ARP cache, issue broadcasts, handle replies.
+
+Task Suggested Test Method :
+  Test ping from another machine and verify resolution.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 079
+Task Name                : Add IPv4 Stack with Routing Table
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/ip.c
+Task Description         : 
+  Handle basic IPv4 header parsing, routing, and checksum validation.
+
+Tasks Codex Instructions :
+  Drop malformed packets, forward local ones to upper layers.
+
+Task Suggested Test Method :
+  Log source/destination IPs of each incoming packet.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 080
+Task Name                : Implement UDP Stack
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/udp.c
+Task Description         : 
+  Add basic UDP datagram parsing, socket binding, and delivery.
+
+Tasks Codex Instructions :
+  Create UDP socket struct, match on port, and deliver data to user.
+
+Task Suggested Test Method :
+  Send and receive test packets with netcat.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 081
+Task Name                : Support Bind/Sendto/Recvfrom Syscalls
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall.c, kernel/net/socket.c
+Task Description         : 
+  Allow user apps to create UDP sockets, bind to port, and send/receive data.
+
+Tasks Codex Instructions :
+  Handle socket FD creation, memory copy to/from buffer.
+
+Task Suggested Test Method :
+  Echo server in user mode: reply to received packet.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 082
+Task Name                : Implement Basic DNS Resolver
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/dns.c
+Task Description         : 
+  Send DNS query to configured server and parse A record response.
+
+Tasks Codex Instructions :
+  Build DNS UDP packet, parse response, extract IP.
+
+Task Suggested Test Method :
+  Resolve `aios.dev` to test server IP.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 083
+Task Name                : Implement Basic TCP 3-Way Handshake
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/tcp.c
+Task Description         : 
+  Detect SYN, ACK, FIN and track connection state.
+
+Tasks Codex Instructions :
+  Maintain TCP control block, handle sequence numbers.
+
+Task Suggested Test Method :
+  Capture and log TCP connection from another device.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 084
+Task Name                : Create Virtual Network Interface
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/tap.c
+Task Description         : 
+  Emulate a software TAP device to route packets internally.
+
+Tasks Codex Instructions :
+  Create vNIC with MAC address, route into network stack.
+
+Task Suggested Test Method :
+  Loopback interface can ping 127.0.0.1 via stack.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 085
+Task Name                : Add Loadable Module Interface
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/module.c
+Task Description         : 
+  Support loading .ko or .elf kernel modules with symbols and init hooks.
+
+Tasks Codex Instructions :
+  Provide sys_module_load, relocate symbols, call init.
+
+Task Suggested Test Method :
+  Load sample module that logs 'hello module'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 086
+Task Name                : Build Kernel Symbol Table
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/symtab.c
+Task Description         : 
+  Expose kernel function symbols for modules and backtraces.
+
+Tasks Codex Instructions :
+  Parse symbol table, export names and addresses.
+
+Task Suggested Test Method :
+  Dump to /proc/kallsyms or similar debug output.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 087
+Task Name                : Enable Stack Backtracing on Fault
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/debug.c
+Task Description         : 
+  Walk return addresses and resolve using symtab on panic.
+
+Tasks Codex Instructions :
+  Print file/function/offset per frame.
+
+Task Suggested Test Method :
+  Trigger panic and capture trace log.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 088
+Task Name                : Create Kernel Debug Shell
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/shell.c
+Task Description         : 
+  Add serial console shell to issue kernel commands.
+
+Tasks Codex Instructions :
+  Implement command parser: help, ps, kill, loglevel.
+
+Task Suggested Test Method :
+  Boot and run shell commands from serial input.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 089
+Task Name                : Enable Secure Mode + Kernel Lockdown Flag
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/security.c
+Task Description         : 
+  Prevent module loading, PCI I/O, and debug interfaces in secure mode.
+
+Tasks Codex Instructions :
+  Use UEFI variable or bootloader DNA to enter lockdown.
+
+Task Suggested Test Method :
+  Log that secure mode is enforced and deny debug actions.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 090
+Task Name                : Create AI Core Bootstrap Stub
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_core.c
+Task Description         : 
+  Initialize AI subsystem entry, identity data, and async agent loop.
+
+Tasks Codex Instructions :
+  Parse CPU ID, MAC, disk serial, boot PCRs into memory model.
+
+Task Suggested Test Method :
+  Print 'AI identity map initialized' at end of kernel boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 091
+Task Name                : Enable AI Experience Replay Buffer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_experience.c
+Task Description         : 
+  Create a rolling buffer of past system actions, inputs, and outcomes for AI agents.
+
+Tasks Codex Instructions :
+  Define a ring buffer with timestamped events and context. Expose to AI subsystem.
+
+Task Suggested Test Method :
+  Boot and log 'Replay buffer started with depth: 1024'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 092
+Task Name                : Implement AI Core Self-Tuning Feedback
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_core.c
+Task Description         : 
+  Allow AI routines to score and adapt parameters based on success/failure metrics.
+
+Tasks Codex Instructions :
+  Add API to record success/failure per policy path and weight updates.
+
+Task Suggested Test Method :
+  Log: 'AI self-tuning activated (adaptive mode)'
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 093
+Task Name                : Add AI Knowledge Storage Layer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_knowledge.c
+Task Description         : 
+  Store learned patterns, behaviors, and decision maps in persistent format.
+
+Tasks Codex Instructions :
+  Define structures to hold key-value learning and serialize to disk.
+
+Task Suggested Test Method :
+  Test by saving and reloading decisions from /ai/knowledge.db.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 094
+Task Name                : Create Kernel Heartbeat Watchdog
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/watchdog.c
+Task Description         : 
+  Ping watchdog from scheduler or tick hook, panic if not refreshed.
+
+Tasks Codex Instructions :
+  Expose watchdog_enable(), watchdog_ping(), and timeout logic.
+
+Task Suggested Test Method :
+  Trigger panic if no ping after N ms.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 095
+Task Name                : Expose System Health to /proc/health
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/procfs.c
+Task Description         : 
+  Add CPU load, uptime, mem usage, and error count to a health pseudo-file.
+
+Tasks Codex Instructions :
+  Update periodically from system metrics, readable via cat.
+
+Task Suggested Test Method :
+  Test with user app that reads and logs /proc/health.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 096
+Task Name                : Create Dynamic Boot DNA Logger
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/bootdna.c
+Task Description         : 
+  Capture full hardware, boot trace, AI hash, and PCR summary to secure boot log.
+
+Tasks Codex Instructions :
+  Store SHA-256 of identity state and mark as trusted/not.
+
+Task Suggested Test Method :
+  Log: 'Boot DNA hash: ABCD1234...'
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 097
+Task Name                : Implement Kernel Update Mechanism
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/update.c
+Task Description         : 
+  Support atomic update of kernel ELF image from /boot/kernel.next.
+
+Tasks Codex Instructions :
+  Verify signature, write to safe sector, set flag for next boot.
+
+Task Suggested Test Method :
+  Log: 'Staged kernel update complete'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 098
+Task Name                : Add Safe Rollback Recovery
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/update.c
+Task Description         : 
+  On boot failure, restore previous working kernel from backup partition.
+
+Tasks Codex Instructions :
+  Track boot success in NVRAM or file, fall back if timeout.
+
+Task Suggested Test Method :
+  Log: 'Rolled back to previous kernel version'
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 099
+Task Name                : Integrate TPM-Sealed AI State Loader
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_core.c
+Task Description         : 
+  Decrypt and load AI state blob only if PCRs match trusted state.
+
+Tasks Codex Instructions :
+  Use TPM2_Unseal and check against sealed policy hash.
+
+Task Suggested Test Method :
+  Log: 'AI state loaded and verified via TPM'
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 100
+Task Name                : Create Causality Graph Engine Stub
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_graph.c
+Task Description         : 
+  Start data structures to track cause-effect between actions and states.
+
+Tasks Codex Instructions :
+  Define edges, nodes, timestamps and link success paths.
+
+Task Suggested Test Method :
+  Log: 'Causality graph engine initialized'
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 101
+Task Name                : Support ACPI Sleep and Wake States
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/power.c
+Task Description         : 
+  Trigger S3 sleep and resume using ACPI methods.
+
+Tasks Codex Instructions :
+  Invoke SLP_TYP with PM1A control block and wake handlers.
+
+Task Suggested Test Method :
+  Sleep system via shell command and verify resume.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 102
+Task Name                : Enable CPU Turbo and C-State Scaling
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/cpu.c
+Task Description         : 
+  Use MSRs or ACPI to control TurboBoost and deep C-states.
+
+Tasks Codex Instructions :
+  Expose interface to toggle states per core or policy.
+
+Task Suggested Test Method :
+  Log CPU power state transitions.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 103
+Task Name                : Add Battery Monitoring Support
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/acpi_battery.c
+Task Description         : 
+  Read battery info via ACPI EC or _BIF/_BST methods.
+
+Tasks Codex Instructions :
+  Print percent, voltage, time remaining to /proc/battery.
+
+Task Suggested Test Method :
+  Test laptop with battery and read status file.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 104
+Task Name                : Implement Temperature and Fan Sensors
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/hwmon.c
+Task Description         : 
+  Expose thermal zones, fan speeds, and alerts via /proc/temp and /proc/fan.
+
+Tasks Codex Instructions :
+  Poll ACPI or SMBus registers, log results.
+
+Task Suggested Test Method :
+  Trigger shutdown if over threshold.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 105
+Task Name                : Log Thermal Events and Adjust CPU Throttle
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/thermal.c
+Task Description         : 
+  On high temp, adjust scheduler weight or reduce turbo to cool system.
+
+Tasks Codex Instructions :
+  Log thermal events and mitigation steps.
+
+Task Suggested Test Method :
+  Cause thermal spike (loop) and monitor behavior.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 106
+Task Name                : Enable Smart Shutdown Policies
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/policy.c
+Task Description         : 
+  Auto shutdown system on critical errors or repeated boot failures.
+
+Tasks Codex Instructions :
+  Set watchdog/error count thresholds, initiate shutdown call.
+
+Task Suggested Test Method :
+  Test by simulating 3 kernel panics.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 107
+Task Name                : Create Boot Time Benchmark Logger
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/bootlog.c
+Task Description         : 
+  Log timestamps of each boot phase for performance tracking.
+
+Tasks Codex Instructions :
+  Compare times to previous boot and store to /proc/bootstats.
+
+Task Suggested Test Method :
+  Graph times to detect boot regressions.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 108
+Task Name                : Add Event Trace Recorder
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/trace.c
+Task Description         : 
+  Record major kernel and AI events to a trace ring with timestamp and thread ID.
+
+Tasks Codex Instructions :
+  Expose via serial or dump to file.
+
+Task Suggested Test Method :
+  Trace userland fork, syscalls, IO, AI feedback.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 109
+Task Name                : Implement Kernel-Level Syscall Profiler
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/profiler.c
+Task Description         : 
+  Track count and average latency of syscalls per process.
+
+Tasks Codex Instructions :
+  Store in per-process struct and show in /proc/<pid>/syscalls.
+
+Task Suggested Test Method :
+  Generate report after running stress test.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 110
+Task Name                : Add Metrics Exporter to External Port
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/metrics.c
+Task Description         : 
+  Open TCP port (e.g. 9100) and export Prometheus-style metrics from kernel.
+
+Tasks Codex Instructions :
+  Serialize /proc data into HTTP-style endpoint.
+
+Task Suggested Test Method :
+  Test with curl from remote machine to pull stats.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 111
+Task Name                : Enable User Session Snapshot
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/snapshot.c
+Task Description         : 
+  Save full process, memory, and open FD state for session restore.
+
+Tasks Codex Instructions :
+  Serialize to snapshot.img and restore on reboot.
+
+Task Suggested Test Method :
+  Suspend to disk and restore session.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 112
+Task Name                : Create Kernel Crash Dump Generator
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/crash.c
+Task Description         : 
+  On panic, dump kernel memory, stack, registers to dump.img.
+
+Tasks Codex Instructions :
+  Write identifiable signature and CRC at end.
+
+Task Suggested Test Method :
+  Trigger panic and verify crashdump file.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 113
+Task Name                : Securely Wipe RAM on Shutdown
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/security.c
+Task Description         : 
+  Zero physical RAM pages on poweroff or reboot to prevent data leakage.
+
+Tasks Codex Instructions :
+  Loop through all mapped pages and wipe.
+
+Task Suggested Test Method :
+  Measure shutdown time before/after.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 114
+Task Name                : Create Kernel Entropy Collector
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/entropy.c
+Task Description         : 
+  Gather entropy from interrupt timing, network jitter, disk ops.
+
+Tasks Codex Instructions :
+  Feed into RNG pool for AI and crypto.
+
+Task Suggested Test Method :
+  Log entropy level every 5 seconds.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 115
+Task Name                : Add Kernel RNG and Crypto API
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/crypto.c
+Task Description         : 
+  Expose get_random_bytes, AES, SHA256, HMAC to kernel and AI modules.
+
+Tasks Codex Instructions :
+  Use hardware if available, fallback to software.
+
+Task Suggested Test Method :
+  Test PRNG output, verify determinism and entropy tracking.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 116
+Task Name                : Create Remote Kernel Debug Bridge
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/debugnet.c
+Task Description         : 
+  Allow debug connection over TCP to inspect memory, logs, run commands.
+
+Tasks Codex Instructions :
+  Require secure boot and challenge/response.
+
+Task Suggested Test Method :
+  Connect via debug tool and issue 'show log'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 117
+Task Name                : Expose Firmware Version Info
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/sysinfo.c
+Task Description         : 
+  Dump BIOS/UEFI vendor, date, Secure Boot state, TPM, etc.
+
+Tasks Codex Instructions :
+  Query UEFI variables or SMBIOS data.
+
+Task Suggested Test Method :
+  Show info in /proc/firmware and boot log.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 118
+Task Name                : Log Kernel Build and Commit Metadata
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/version.c
+Task Description         : 
+  Embed Git hash, build date, user, and flags into the kernel image.
+
+Tasks Codex Instructions :
+  Print at boot and export in shell/debug interface.
+
+Task Suggested Test Method :
+  Test by changing commit and rebuilding.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 119
+Task Name                : Create Kernel Reboot and Halt Commands
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/shell.c
+Task Description         : 
+  Add shell command for safe reboot, poweroff, and reset.
+
+Tasks Codex Instructions :
+  Flush disks, unmount filesystems, issue shutdown ACPI call.
+
+Task Suggested Test Method :
+  Type 'reboot' in shell and confirm clean exit.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 120
+Task Name                : Add AI Command Interface
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_shell.c
+Task Description         : 
+  Create AI command shell: log memory, replay decisions, tune weights.
+
+Tasks Codex Instructions :
+  Bind to /dev/ai0 or shell alias 'aicmd'.
+
+Task Suggested Test Method :
+  Run 'aicmd dump replay' and inspect output.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 121
+Task Name                : AI Context Awareness Engine
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_context.c
+Task Description         : 
+  Implement engine to track temporal and situational context across actions.
+
+Tasks Codex Instructions :
+  Maintain current task, focus window, prior decision frames.
+
+Task Suggested Test Method :
+  Log 'AI context initialized (scope: kernel global)'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 122
+Task Name                : AI Goal Agent Framework
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_goal.c
+Task Description         : 
+  Allow the system to set, track, and pursue short- and long-term goals.
+
+Tasks Codex Instructions :
+  Define goal structs, priorities, and agent loop.
+
+Task Suggested Test Method :
+  Log 'AI GoalAgent online: 0 active goals'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 123
+Task Name                : AI Model Selection and Lifecycle Manager
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_model.c
+Task Description         : 
+  Allow kernel to load, activate, freeze, or replace AI models on demand.
+
+Tasks Codex Instructions :
+  Support selection via config or agent decision.
+
+Task Suggested Test Method :
+  Log current model name and state on boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 124
+Task Name                : Integrate AI Self-Model Agent
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_self.c
+Task Description         : 
+  Enable system to maintain a structured model of its own identity and capabilities.
+
+Tasks Codex Instructions :
+  Track boot DNA, hardware, kernel version, skill map.
+
+Task Suggested Test Method :
+  Output: 'SelfModelAgent: identity map stabilized'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 125
+Task Name                : Add Filesystem Mount/Unmount Syscalls
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/vfs.c
+Task Description         : 
+  Support runtime mounting of devfs, ramfs, procfs, etc.
+
+Tasks Codex Instructions :
+  Implement `mount(path, fsname)` and `umount(path)`.
+
+Task Suggested Test Method :
+  Mount /dev and check devices appear.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 126
+Task Name                : Create Persistent Disk Filesystem (AiFS)
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/aifs.c
+Task Description         : 
+  Implement modern journaling filesystem optimized for AI data.
+
+Tasks Codex Instructions :
+  Support metadata, fast lookup, file versioning, semantic tags.
+
+Task Suggested Test Method :
+  Mount AiFS on /data and test read/write.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 127
+Task Name                : Implement AiFS Journal and Crash Recovery
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/aifs_journal.c
+Task Description         : 
+  Record all writes in journal and replay on mount if crash detected.
+
+Tasks Codex Instructions :
+  Support atomic rename, delete, append replay.
+
+Task Suggested Test Method :
+  Simulate crash, remount, and recover state.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 128
+Task Name                : Add Command History and Completion to Shell
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/shell.c
+Task Description         : 
+  Support up/down arrow navigation and tab completion in debug shell.
+
+Tasks Codex Instructions :
+  Maintain scrollable history buffer and prefix match.
+
+Task Suggested Test Method :
+  Test typing and shell navigation.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 129
+Task Name                : Add CLI Command: dump_ai_state
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/shell.c, ai_core.c
+Task Description         : 
+  Expose internal AI memory, weights, and context via CLI command.
+
+Tasks Codex Instructions :
+  Print to console or write to file /tmp/ai_dump.txt.
+
+Task Suggested Test Method :
+  Run 'dump_ai_state' and verify output.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 130
+Task Name                : Support Remote AI Shell Session via Network
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_remote.c
+Task Description         : 
+  Expose interactive shell via authenticated TCP port.
+
+Tasks Codex Instructions :
+  Secure with HMAC challenge and allow AI inspection/control.
+
+Task Suggested Test Method :
+  Connect from remote tool and issue 'ai status'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 131
+Task Name                : Enable Speech-to-Command Interface (AI Mic)
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_audio.c
+Task Description         : 
+  Capture microphone input, convert to text, map to shell commands.
+
+Tasks Codex Instructions :
+  Pipe WAV into model, print transcription.
+
+Task Suggested Test Method :
+  Say 'reboot' and system matches it.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 132
+Task Name                : Support Voice Synthesis of Logs
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_tts.c
+Task Description         : 
+  Convert select log lines or alerts to spoken output.
+
+Tasks Codex Instructions :
+  Integrate software TTS backend or external module.
+
+Task Suggested Test Method :
+  Play 'System boot complete' via speaker.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 133
+Task Name                : Enable Camera-Based Boot Visual Input
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_vision.c
+Task Description         : 
+  Capture image from webcam during boot, analyze for state or QR triggers.
+
+Tasks Codex Instructions :
+  Save first frame to /boot/vision.jpg.
+
+Task Suggested Test Method :
+  Test by scanning QR code on boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 134
+Task Name                : Support Remote File Push/Pull API
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/fileapi.c
+Task Description         : 
+  Upload/download files via authenticated network endpoint (HTTP or raw).
+
+Tasks Codex Instructions :
+  Support `/api/upload`, `/api/download?path=/tmp/test`.
+
+Task Suggested Test Method :
+  Upload AI module remotely and confirm checksum match.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 135
+Task Name                : Add Shell Command: system info
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/shell.c
+Task Description         : 
+  Display CPU, RAM, uptime, kernel version, secure mode, boot hash.
+
+Tasks Codex Instructions :
+  Pull info from kernel structs and format.
+
+Task Suggested Test Method :
+  Run `info` and inspect formatted output.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 136
+Task Name                : Expose System Call Tracer UI
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/syscall_trace.c
+Task Description         : 
+  Log syscalls by PID, time, and args, and optionally show live feed.
+
+Tasks Codex Instructions :
+  Toggle on/off from shell or /proc.
+
+Task Suggested Test Method :
+  Run `trace on` and observe live syscall log.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 137
+Task Name                : Create Kernel-Level Key-Value Store API
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/kv.c
+Task Description         : 
+  Expose persistent, indexable, secure KV store for AI state and modules.
+
+Tasks Codex Instructions :
+  Use fast hashing, optional encryption, and journaling.
+
+Task Suggested Test Method :
+  Test create/get/delete keys via kernel API.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 138
+Task Name                : Enable Secure Storage Mount with TPM Keys
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/security.c
+Task Description         : 
+  Mount encrypted disk volume only if unsealed by TPM and Secure Boot pass.
+
+Tasks Codex Instructions :
+  Use TPM2 policy + LUKS-style key unlocking.
+
+Task Suggested Test Method :
+  Log: 'Secure volume /vault unlocked'
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 139
+Task Name                : Create User Session Manager
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/session.c
+Task Description         : 
+  Track logged-in user, home mount, session PID tree, logout timer.
+
+Tasks Codex Instructions :
+  Expose to AI for context-awareness and preference memory.
+
+Task Suggested Test Method :
+  Log 'session: user=root pid=1001 tty=shell0'
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 140
+Task Name                : Implement Session Snapshot and Restore
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/session.c
+Task Description         : 
+  Allow users to save full process/memory/session and reload.
+
+Tasks Codex Instructions :
+  Serialize task tree and map to restore ID.
+
+Task Suggested Test Method :
+  Log: 'Restored session ID aios-usr-0002'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 141
+Task Name                : Add Filesystem Quota Enforcement
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/vfs.c
+Task Description         : 
+  Track per-user file count, space usage, and block new files beyond limit.
+
+Tasks Codex Instructions :
+  Expose via /proc/quota and enforce at VFS layer.
+
+Task Suggested Test Method :
+  Create 100MB file and observe quota block.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 142
+Task Name                : Support Symbolic and Hard Links
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/vfs.c
+Task Description         : 
+  Implement symlink() and link() syscalls, resolve paths properly.
+
+Tasks Codex Instructions :
+  Create alias to config file and access original.
+
+Task Suggested Test Method :
+  Test `ln -s /data/model /model_link`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 143
+Task Name                : Build Kernel Regression Test Runner
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/test.c
+Task Description         : 
+  Run boot-time and on-demand tests for AI/FS/MM/Scheduler subsystems.
+
+Tasks Codex Instructions :
+  Log pass/fail to /proc/test and /dev/log.
+
+Task Suggested Test Method :
+  Run `test all` from shell and verify success.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 144
+Task Name                : Add Syscall Filtering and Audit Policy
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/seccomp.c
+Task Description         : 
+  Restrict which syscalls each process can make, with audit logs.
+
+Tasks Codex Instructions :
+  Deny open() to unauthorized PID, log and kill.
+
+Task Suggested Test Method :
+  Trigger restricted call and observe audit line.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 145
+Task Name                : Support Shell Piping and Redirection
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/shell_exec.c
+Task Description         : 
+  Enable `|`, `>`, `<` in shell to connect commands and redirect IO.
+
+Tasks Codex Instructions :
+  Parse and manage FD routing in child process setup.
+
+Task Suggested Test Method :
+  Run `cat file | grep hello > result.txt`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 146
+Task Name                : Expose System AI Personality File
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_persona.c
+Task Description         : 
+  Define editable traits and response tone file used by AI layer.
+
+Tasks Codex Instructions :
+  Allow loading preset (neutral, helpful, assertive).
+
+Task Suggested Test Method :
+  Edit `/etc/ai/personality.conf` and reload.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 147
+Task Name                : Implement Process Sandbox Policy Engine
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/sandbox.c
+Task Description         : 
+  Limit access to FS, syscalls, memory for apps via sandbox profiles.
+
+Tasks Codex Instructions :
+  Enforce at exec() time with per-binary policy.
+
+Task Suggested Test Method :
+  Launch app with `sandbox netless`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 148
+Task Name                : Create Realtime Kernel Task Monitor
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/monitor.c
+Task Description         : 
+  Live view of scheduler, task states, CPU usage, I/O stats.
+
+Tasks Codex Instructions :
+  Output to serial shell or framebuffer UI.
+
+Task Suggested Test Method :
+  Run `monitor` and view live CPU bars.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 149
+Task Name                : Enable Scriptable Shell Startup Hooks
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/initrc.c
+Task Description         : 
+  Allow `/etc/initrc` or `/etc/aios_start` to define boot shell steps.
+
+Tasks Codex Instructions :
+  Support env vars, command blocks.
+
+Task Suggested Test Method :
+  Edit file to `log boot ok` and confirm run.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 150
+Task Name                : Support Compressed Kernel Image Loading
+Subsystem                : Bootloader / Kernel
+Effected C Files         : bootloader/main.c, bootloader/decompress.c
+Task Description         : 
+  Add support for loading gzip-compressed ELF64 kernel.
+
+Tasks Codex Instructions :
+  Decompress in memory and verify ELF before jump.
+
+Task Suggested Test Method :
+  Compress kernel.elf and boot successfully.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 151
+Task Name                : Implement Multi-User Login and Switcher
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/login.c
+Task Description         : 
+  Allow multiple users to log in concurrently with session isolation.
+
+Tasks Codex Instructions :
+  Track UID, shell PID, and mount /home/<user> for each.
+
+Task Suggested Test Method :
+  Test logging in as two users and switching with `su`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 152
+Task Name                : Add User Credential Manager and PAM-like API
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/auth.c
+Task Description         : 
+  Manage user accounts, passwords, and auth policies with pluggable hooks.
+
+Tasks Codex Instructions :
+  Use /etc/passwd.db and expose `check_auth(username, pass)`.
+
+Task Suggested Test Method :
+  Try login with valid/invalid credentials.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 153
+Task Name                : Create Secure Remote File Executor
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net/remote_exec.c
+Task Description         : 
+  Allow signed binaries to be pushed over network and run in sandbox.
+
+Tasks Codex Instructions :
+  Verify signature, execute with `sandbox` flag.
+
+Task Suggested Test Method :
+  Push 'uptime' script and run via remote.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 154
+Task Name                : Enable Encrypted User Home Directories
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/encfs.c
+Task Description         : 
+  Mount /home/<user> from encrypted volume unlocked via user password.
+
+Tasks Codex Instructions :
+  Use AES-XTS and TPM-sealed metadata.
+
+Task Suggested Test Method :
+  Login and confirm home dir decrypted on auth.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 155
+Task Name                : Implement AiFS Metadata Indexer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/aifs_meta.c
+Task Description         : 
+  Allow tagging, search, and semantic linking of files.
+
+Tasks Codex Instructions :
+  Index filenames, author, tags, relations into searchable map.
+
+Task Suggested Test Method :
+  Search for files by tag: `project=aios`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 156
+Task Name                : Create Kernel Metrics Collector Daemon
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/metrics.c
+Task Description         : 
+  Daemon to collect performance, IO, memory, syscall usage over time.
+
+Tasks Codex Instructions :
+  Store to ring buffer or file for time-series view.
+
+Task Suggested Test Method :
+  Visualize CPU usage over 10 mins.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 157
+Task Name                : Enable User-Defined AI Policies via /etc/ai/policy.d
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_policy.c
+Task Description         : 
+  Support drop-in text-based policy rules for AI decision logic.
+
+Tasks Codex Instructions :
+  Parse rules like `if cpu > 90 then reduce_turbo`.
+
+Task Suggested Test Method :
+  Edit file, reload policy, and test effect.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 158
+Task Name                : Expose AI Metric Training Feedback Interface
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_train.c
+Task Description         : 
+  Allow external agents to send reward/punishment feedback to AI modules.
+
+Tasks Codex Instructions :
+  Provide /dev/ai_feedback with structured protocol.
+
+Task Suggested Test Method :
+  Run `echo reward > /dev/ai_feedback` and log result.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 159
+Task Name                : Add Live Kernel Patching Support
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/livepatch.c
+Task Description         : 
+  Allow runtime patching of functions or data with signature check.
+
+Tasks Codex Instructions :
+  Use jump trampolines or text patching.
+
+Task Suggested Test Method :
+  Patch log function and verify new behavior.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 160
+Task Name                : Implement Network Namespace Isolation
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/netns.c
+Task Description         : 
+  Allow processes to have isolated network views (interfaces, routes, ports).
+
+Tasks Codex Instructions :
+  Use clone flags and per-namespace stack.
+
+Task Suggested Test Method :
+  Run isolated app with private veth.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 161
+Task Name                : Support Filesystem Namespaces and Mount Isolation
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/vfs_ns.c
+Task Description         : 
+  Per-process mount table and root directory.
+
+Tasks Codex Instructions :
+  Fork process with alternate mount root, prevent global view.
+
+Task Suggested Test Method :
+  Test chroot-like behavior for container process.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 162
+Task Name                : Create Lightweight Container Launch Tool
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/container.c
+Task Description         : 
+  Launch app with own PID tree, FS, NET, and limited syscalls.
+
+Tasks Codex Instructions :
+  Support `run_container /bin/test.sh` with namespace flags.
+
+Task Suggested Test Method :
+  Verify isolation from host process list.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 163
+Task Name                : Implement AI Routine Scheduler
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_sched.c
+Task Description         : 
+  Schedule AI agents, background inference, and memory cleanup as kernel tasks.
+
+Tasks Codex Instructions :
+  Prioritize based on system load and goal urgency.
+
+Task Suggested Test Method :
+  Log scheduled AI agent ticks.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 164
+Task Name                : Create AI Skill Registration API
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_skills.c
+Task Description         : 
+  Register modules with capabilities like speech, vision, planning.
+
+Tasks Codex Instructions :
+  Store metadata, version, resource use.
+
+Task Suggested Test Method :
+  List registered skills in `/proc/ai/skills`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 165
+Task Name                : Implement Long-Term AI Memory Store
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_memory.c
+Task Description         : 
+  Persist AI data across reboots: events, patterns, user feedback.
+
+Tasks Codex Instructions :
+  Store to /var/ai/memory.db with expiry and cleanup.
+
+Task Suggested Test Method :
+  Verify recall of memory from last boot.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 166
+Task Name                : Add Kernel Event Hook System
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/hook.c
+Task Description         : 
+  Allow code to register for kernel events like fork, exec, io, panic.
+
+Tasks Codex Instructions :
+  Use hook chains and safe execution wrappers.
+
+Task Suggested Test Method :
+  Register hook to log every process start.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 167
+Task Name                : Expose AI Agent Decision Logs
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_core.c
+Task Description         : 
+  Log each AI decision, input, output, and score to file or trace.
+
+Tasks Codex Instructions :
+  Enable/disable via shell or config.
+
+Task Suggested Test Method :
+  Audit log shows decision to throttle CPU.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 168
+Task Name                : Enable Predictive Prefetching Based on History
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/mmu.c
+Task Description         : 
+  AI predicts upcoming pages and preloads into memory.
+
+Tasks Codex Instructions :
+  Track process access patterns and file usage.
+
+Task Suggested Test Method :
+  Reduce page faults under workload replay.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 169
+Task Name                : Add Smart Update Manager with Rollback
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/updater.c
+Task Description         : 
+  Perform safe OS + AI module updates with rollback, resume, and audit.
+
+Tasks Codex Instructions :
+  Track update stages, hash, and timestamp.
+
+Task Suggested Test Method :
+  Revert to last version if test boot fails.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 170
+Task Name                : Implement Auto-Healing Logic
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/selfheal.c
+Task Description         : 
+  Detect recurring faults or crashes and trigger self-correction.
+
+Tasks Codex Instructions :
+  Restart services, revert configs, or isolate modules.
+
+Task Suggested Test Method :
+  Simulate fault in GPU driver and observe recovery.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 171
+Task Name                : Support Distributed AI Knowledge Sync
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_sync.c
+Task Description         : 
+  Synchronize AI memory and experience data between trusted AiOS machines.
+
+Tasks Codex Instructions :
+  Use secure session, delta sync, and conflict merge.
+
+Task Suggested Test Method :
+  Verify sync to remote and back using modified policy set.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 172
+Task Name                : Add Encrypted Remote Model Fetcher
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_model_net.c
+Task Description         : 
+  Download signed and encrypted AI models over HTTPS with validation.
+
+Tasks Codex Instructions :
+  Verify SHA-256 and signature before load.
+
+Task Suggested Test Method :
+  Test download from aios.cloud/model/latest.aimodel.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 173
+Task Name                : Create AI Experience Sharing Protocol
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_federation.c
+Task Description         : 
+  Allow nodes to publish/subscribe to high-value decisions, patterns, or faults.
+
+Tasks Codex Instructions :
+  Use topic keys, trust score, signed payloads.
+
+Task Suggested Test Method :
+  Log: 'Received shared experience: event_3476 [trusted]'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 174
+Task Name                : Implement Dynamic Threat Modeling Agent
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_threat.c
+Task Description         : 
+  Continuously model risks from observed behavior, connections, and anomalies.
+
+Tasks Codex Instructions :
+  Score modules or processes for threat and uncertainty.
+
+Task Suggested Test Method :
+  Flag suspicious process that spikes CPU after login.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 175
+Task Name                : Create Real-Time Kernel Behavior Tuner
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/autotune.c
+Task Description         : 
+  AI dynamically adjusts kernel behavior (scheduler, memory, io) for workload.
+
+Tasks Codex Instructions :
+  Log reason for changes and rollback if regressions.
+
+Task Suggested Test Method :
+  Detect high video load and tune IO buffer cache size.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 176
+Task Name                : Enable Kernel Configuration Replay
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/config_replay.c
+Task Description         : 
+  Record key config changes (FS, network, AI, scheduler) and allow rollback.
+
+Tasks Codex Instructions :
+  Save to /etc/aios/config_replay.log with timestamps.
+
+Task Suggested Test Method :
+  Replay config from 10 minutes ago.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 177
+Task Name                : Build AI Skill Graph Engine
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_skillgraph.c
+Task Description         : 
+  Map dependencies between skills and actions for compositional planning.
+
+Tasks Codex Instructions :
+  Each skill has inputs, outputs, cost, and success rate.
+
+Task Suggested Test Method :
+  Log skillgraph resolution plan for complex AI action.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 178
+Task Name                : Add System Trust Score Aggregator
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/trust.c
+Task Description         : 
+  Aggregate integrity checks, AI feedback, and behavior logs into 0–100 trust rating.
+
+Tasks Codex Instructions :
+  Score is used to restrict updates, exec, or remote commands.
+
+Task Suggested Test Method :
+  Log: 'Trust Score: 91/100 - healthy'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 179
+Task Name                : Implement Kernel-Level Auto-Scaling Profiles
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/policy.c
+Task Description         : 
+  Profile-based rules change performance, energy, or AI depth on workload shifts.
+
+Tasks Codex Instructions :
+  Switch between 'eco', 'balanced', 'max_performance'.
+
+Task Suggested Test Method :
+  User sets profile, kernel confirms switch and new limits.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 180
+Task Name                : Support Deferred Execution Queues
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/queue.c
+Task Description         : 
+  Queue kernel jobs to run with delay or low priority.
+
+Tasks Codex Instructions :
+  Used by telemetry, AI training, diagnostics.
+
+Task Suggested Test Method :
+  Queue disk scan for idle and execute 30s later.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 181
+Task Name                : Create Trust Chain for File Access
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/trust_fs.c
+Task Description         : 
+  Track which process, user, and source produced each file.
+
+Tasks Codex Instructions :
+  Expose in statx() or extended attributes.
+
+Task Suggested Test Method :
+  List /tmp/malware and inspect trust chain to origin.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 182
+Task Name                : Expose Cloud Management Interface
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/cloud_bridge.c
+Task Description         : 
+  Support authenticated REST API to control system remotely via cloud.
+
+Tasks Codex Instructions :
+  Allow reboot, update, metrics pull, file push.
+
+Task Suggested Test Method :
+  Send 'shutdown' from cloud UI and confirm safe shutdown.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 183
+Task Name                : Implement Kernel AI Model Attestation
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_attest.c
+Task Description         : 
+  Verify loaded AI modules via remote or local signature validation.
+
+Tasks Codex Instructions :
+  Log model name, hash, signer, and integrity check result.
+
+Task Suggested Test Method :
+  Reject tampered model and fallback to previous.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 184
+Task Name                : Create Personality-Adaptive Shell Prompts
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_shell.c
+Task Description         : 
+  Customize shell tone, color, message style based on AI personality traits.
+
+Tasks Codex Instructions :
+  Use traits from personality config file.
+
+Task Suggested Test Method :
+  Prompt changes between 'developer' and 'casual' mode.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 185
+Task Name                : Add Behavior Score to Each User Session
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/session.c
+Task Description         : 
+  Rate user behavior based on interaction quality, errors, usage pattern.
+
+Tasks Codex Instructions :
+  Score affects AI responses, trust, limits.
+
+Task Suggested Test Method :
+  Show user score in session log on logout.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 186
+Task Name                : Track Command Intent Recognition Accuracy
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_metrics.c
+Task Description         : 
+  Score AI understanding of shell commands vs expected result.
+
+Tasks Codex Instructions :
+  Use correction loop if user reruns fixed command.
+
+Task Suggested Test Method :
+  Log: 'Intent match accuracy: 93.4%'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 187
+Task Name                : Enable Real-Time Visual Logs
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_vision_log.c
+Task Description         : 
+  Display logs visually: graphs, trust scores, processes, in framebuffer.
+
+Tasks Codex Instructions :
+  Use mode=graph to draw CPU and trust graph.
+
+Task Suggested Test Method :
+  Boot with `graph` and inspect framebuffer output.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 188
+Task Name                : Support Multi-Language AI Instructions
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_lang.c
+Task Description         : 
+  AI agents understand and respond in multiple languages with translation fallback.
+
+Tasks Codex Instructions :
+  Use small translation map and preferred language flag.
+
+Task Suggested Test Method :
+  Ask question in Arabic and receive English reply with flag.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 189
+Task Name                : Add DevFS-Based Kernel Command Hooks
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/devfs.c
+Task Description         : 
+  Expose special files like /dev/reboot, /dev/update that trigger actions.
+
+Tasks Codex Instructions :
+  Writing to /dev/reboot initiates controlled reboot.
+
+Task Suggested Test Method :
+  Test by writing to each devfs command node.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 190
+Task Name                : Create Deep AI Replay Graph Visualizer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_replay.c
+Task Description         : 
+  Build visual graph of decision, feedback, and results for debugging AI path.
+
+Tasks Codex Instructions :
+  Expose as downloadable dot/graphviz file.
+
+Task Suggested Test Method :
+  Generate graph from last session replay.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 191
+Task Name                : Enable AI Autonomy Scheduler
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_autonomy.c
+Task Description         : 
+  Allow AI to self-initiate actions based on internal state/goals without direct user input.
+
+Tasks Codex Instructions :
+  Define a trigger queue based on priority, trust, and urgency.
+
+Task Suggested Test Method :
+  Observe AI initiating system cleanup based on memory trend.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 192
+Task Name                : Add AI Root Cause Analyzer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_rca.c
+Task Description         : 
+  Analyze faults and incidents to infer root cause using kernel logs, memory, and history.
+
+Tasks Codex Instructions :
+  Build decision tree and likelihood path.
+
+Task Suggested Test Method :
+  Trigger simulated driver crash and verify RCA identifies dependency chain.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 193
+Task Name                : Build Kernel Intent Monitor
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/intent_monitor.c
+Task Description         : 
+  Track user and AI intent behind actions for audit and behavioral learning.
+
+Tasks Codex Instructions :
+  Log mappings of action to expected outcome.
+
+Task Suggested Test Method :
+  Audit log shows: `user opened file: expected to edit`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 194
+Task Name                : Expose Time-Series Graphs via Cloud Endpoint
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/cloud_metrics.c
+Task Description         : 
+  Serve live graphs of CPU, memory, trust, AI actions to remote dashboard.
+
+Tasks Codex Instructions :
+  Use secure websocket or pull JSON snapshots.
+
+Task Suggested Test Method :
+  Access cloud dashboard and visualize kernel trust trend.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 195
+Task Name                : Implement Kernel Rebirth Mode
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/rebirth.c
+Task Description         : 
+  Reset kernel to core AI identity state, keeping only AI memory and trust scores.
+
+Tasks Codex Instructions :
+  Used for AI misalignment or corruption recovery.
+
+Task Suggested Test Method :
+  Run 'rebirth' from shell and verify post-clean state with old memories.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 196
+Task Name                : Create Deep Fault Simulation Framework
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/faultsim.c
+Task Description         : 
+  Simulate hardware, software, network, and AI corruption faults for testing.
+
+Tasks Codex Instructions :
+  Inject faults to specific modules and monitor reaction.
+
+Task Suggested Test Method :
+  Run fault injection on GPU driver and confirm AI fallback activated.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 197
+Task Name                : Enable Ethics Rule Enforcement Layer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_ethics.c
+Task Description         : 
+  Create programmable rule set to guide AI decisions within safe bounds.
+
+Tasks Codex Instructions :
+  Deny destructive actions or privacy-violating behaviors.
+
+Task Suggested Test Method :
+  Log: 'Ethics rule denied shutdown of remote user session'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 198
+Task Name                : Implement Multimodal AI Logger
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_multimodal.c
+Task Description         : 
+  Log and correlate vision, audio, user input, memory and decisions in unified stream.
+
+Tasks Codex Instructions :
+  Align timestamps and build playback index.
+
+Task Suggested Test Method :
+  Replay boot moment with correlated mic/image/log context.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 199
+Task Name                : Support AI Goal Conflict Resolver
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_goals.c
+Task Description         : 
+  Resolve conflicts between short-term and long-term or multi-agent goals.
+
+Tasks Codex Instructions :
+  Use score and impact model to delay, cancel or compromise.
+
+Task Suggested Test Method :
+  Conflict log: goal A (performance) vs goal B (thermal) → result: scaled.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 200
+Task Name                : Create Secure Multi-Agent Execution Policy
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_agents.c
+Task Description         : 
+  Allow multiple AI agents to run with scoped access and arbitration.
+
+Tasks Codex Instructions :
+  Assign capability boundaries and conflict resolution logic.
+
+Task Suggested Test Method :
+  Verify AI diagnostic agent cannot alter system policy.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 201
+Task Name                : Add Federated Trust Score Exchange
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/trust_sync.c
+Task Description         : 
+  Sync trust data between AiOS nodes for experience-weighted collaboration.
+
+Tasks Codex Instructions :
+  Publish/subscribe trust changes securely.
+
+Task Suggested Test Method :
+  Node receives trust drop from peer and revokes model sync.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 202
+Task Name                : Build Kernel-AI Contract System
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_contract.c
+Task Description         : 
+  Declare expected behavior from AI agent to kernel and validate adherence.
+
+Tasks Codex Instructions :
+  Log violations and retry/replace agent.
+
+Task Suggested Test Method :
+  Log: 'Contract violation: exceeded CPU % threshold'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 203
+Task Name                : Add Secure AI Feedback Voting
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_feedbackvote.c
+Task Description         : 
+  Allow multiple agents or sessions to vote on feedback scores or decision scoring.
+
+Tasks Codex Instructions :
+  Use weighted feedback and consensus mechanism.
+
+Task Suggested Test Method :
+  3 votes: action good → +0.7 reward to model A.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 204
+Task Name                : Support Conditional Model Activation
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_model.c
+Task Description         : 
+  Activate AI modules only if triggers or context requires them.
+
+Tasks Codex Instructions :
+  Save memory and reduce background load.
+
+Task Suggested Test Method :
+  Only load `ai_vision` if camera in use.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 205
+Task Name                : Add Predictive Kernel Fault Avoidance
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/selfpredict.c
+Task Description         : 
+  AI monitors trends in syscall patterns, memory faults, and CPU spike to preempt faults.
+
+Tasks Codex Instructions :
+  Reduce thread priority, reallocate memory, or freeze process.
+
+Task Suggested Test Method :
+  Log: 'Kernel predicted memory exhaustion - process 182 throttled'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 206
+Task Name                : Integrate AI-Enhanced Scheduler Heuristics
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/sched_ai.c
+Task Description         : 
+  Let AI agents influence scheduler decisions based on predictions and behavior.
+
+Tasks Codex Instructions :
+  Boost trustful, interactive processes or deprioritize known hogs.
+
+Task Suggested Test Method :
+  Observe scheduler reshuffle with agent reasoning log.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 207
+Task Name                : Build Intent-aware Shell Autocomplete
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/shell.c
+Task Description         : 
+  Autocomplete based not only on command history, but intent analysis and usage pattern.
+
+Tasks Codex Instructions :
+  Rank predictions using prior task and memory.
+
+Task Suggested Test Method :
+  Start typing `co` → complete to `config reload` instead of `copy`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 208
+Task Name                : Expose Ethics Policy Editor
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_ethics_ui.c
+Task Description         : 
+  Allow secure admin editing of AI ethical boundaries, feedback penalties, and trust caps.
+
+Tasks Codex Instructions :
+  Store to `/etc/ai/ethics.rules` with signature.
+
+Task Suggested Test Method :
+  Edit rule file and trigger policy reload.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 209
+Task Name                : Create AI Memory Expiry and Prune Logic
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_memory.c
+Task Description         : 
+  Forget low-value, outdated, or redundant memory entries.
+
+Tasks Codex Instructions :
+  Use score decay and memory pressure-based garbage collection.
+
+Task Suggested Test Method :
+  Memory count drops from 12000 to 6400 after pruning.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 210
+Task Name                : Enable Automatic Context Tagging
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_context.c
+Task Description         : 
+  Tag AI memory, logs, and events with current context automatically.
+
+Tasks Codex Instructions :
+  Use user, time, session, goal, location where possible.
+
+Task Suggested Test Method :
+  Replay shows: 'Context: user=root, goal=debug, time=15:01'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 211
+Task Name                : Implement Secure Watchdog Model Checkpointing
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_checkpoint.c
+Task Description         : 
+  Save AI model weights and memory only if kernel confirms stable and safe state.
+
+Tasks Codex Instructions :
+  Signed checkpoint stored to `/ai/checkpoint.verified`.
+
+Task Suggested Test Method :
+  Log: 'Model checkpoint created after 12h uptime'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 212
+Task Name                : Add Kernel-AI Communication Telemetry API
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_telemetry.c
+Task Description         : 
+  Expose key data from AI → kernel and vice versa via structured telemetry.
+
+Tasks Codex Instructions :
+  Use defined fields for logs, scores, memory metrics.
+
+Task Suggested Test Method :
+  Dump AI telemetry to `/proc/ai/telemetry`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 213
+Task Name                : Support GPU-AI Offload Detection and Metrics
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_gpu.c
+Task Description         : 
+  Track how much AI execution offloads to GPU for optimization purposes.
+
+Tasks Codex Instructions :
+  Measure ops/s, memory used, latency.
+
+Task Suggested Test Method :
+  Log: 'GPU offload active: 68% model XYZ'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 214
+Task Name                : Expose Replay Consistency Validator
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_replay.c
+Task Description         : 
+  Replay same input multiple times and compare AI output for drift or inconsistency.
+
+Tasks Codex Instructions :
+  Trigger alert if deviation > threshold.
+
+Task Suggested Test Method :
+  Run test input twice and verify 98% match.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 215
+Task Name                : Integrate AI Simulation Sandbox
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_sim.c
+Task Description         : 
+  Allow models to simulate outcome of proposed actions before real execution.
+
+Tasks Codex Instructions :
+  Compare action A vs B and pick higher score plan.
+
+Task Suggested Test Method :
+  Simulate 'shutdown vs recover' and observe choice.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 216
+Task Name                : Expose System Causality Chain API
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_graph.c
+Task Description         : 
+  Query recent cause→effect path through API or /proc interface.
+
+Tasks Codex Instructions :
+  Each node includes timestamp, score, memory snapshot.
+
+Task Suggested Test Method :
+  Query causality of performance drop: 'AI task → memory → I/O'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 217
+Task Name                : Allow AI Model Hibernation and Wakeup
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_model.c
+Task Description         : 
+  Unload inactive AI modules to save memory, restore on access.
+
+Tasks Codex Instructions :
+  Preserve weights to disk and reload to same state.
+
+Task Suggested Test Method :
+  Log: 'Hibernated ai_vision (6h idle)'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 218
+Task Name                : Create AI Session Personality Tracking
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_persona.c
+Task Description         : 
+  Track tone, commands, risk behavior, and style per session.
+
+Tasks Codex Instructions :
+  Store profile and adapt replies/assistance.
+
+Task Suggested Test Method :
+  Session shows: 'persona=aggressive, preferred_cmds=force*'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 219
+Task Name                : Implement Secure Remote Model Retirement
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_model_net.c
+Task Description         : 
+  Allow cloud to revoke/retire old AI models from device with audit.
+
+Tasks Codex Instructions :
+  Delete and archive model, verify no load.
+
+Task Suggested Test Method :
+  Receive revoke command and retire `aimodel_legacy_v3`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 220
+Task Name                : Create AI Confidence Meter for Every Output
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_metrics.c
+Task Description         : 
+  Attach a confidence score to every AI reply, action, or suggestion.
+
+Tasks Codex Instructions :
+  Score 0–1, log and expose via telemetry.
+
+Task Suggested Test Method :
+  Log: 'AI output confidence: 0.83 (source: memory, model v5)'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 221
+Task Name                : Create AI Governance Enforcement Layer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_governance.c
+Task Description         : 
+  Central policy engine to enforce constraints on AI behavior and decision scope.
+
+Tasks Codex Instructions :
+  Validate every high-risk AI action against ruleset.
+
+Task Suggested Test Method :
+  Log: 'Governance allowed goal: tune CPU; denied goal: patch live code'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 222
+Task Name                : Implement Predictive Kernel Update Scheduling
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/updater.c
+Task Description         : 
+  Use AI to predict best time for kernel updates based on usage and trust.
+
+Tasks Codex Instructions :
+  Score time windows and minimize risk.
+
+Task Suggested Test Method :
+  Update planned: 04:30 AM, system idle, trust 98.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 223
+Task Name                : Add Dynamic Learning Rate Control
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_train.c
+Task Description         : 
+  AI adjusts its own learning rate depending on recent performance and feedback.
+
+Tasks Codex Instructions :
+  Detect overfitting or reward starvation.
+
+Task Suggested Test Method :
+  Learning rate dropped from 0.02 to 0.009 after error spike.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 224
+Task Name                : Enable AI Simulation of User Behavior
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_sim_user.c
+Task Description         : 
+  Allow AI to simulate user actions and analyze impact on system state.
+
+Tasks Codex Instructions :
+  Used for testing, planning, or security evaluation.
+
+Task Suggested Test Method :
+  Simulate: install app → reboot → trust drop → rollback.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 225
+Task Name                : Support Kernel Profile Switching via AI
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/policy.c
+Task Description         : 
+  Allow AI to switch between kernel modes (secure, dev, diag, max-perf) dynamically.
+
+Tasks Codex Instructions :
+  Justify and log all switches.
+
+Task Suggested Test Method :
+  AI switched to 'secure' after detecting root login.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 226
+Task Name                : Expose Kernel AI Skill Evaluator
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_metrics.c
+Task Description         : 
+  Test registered AI skills for quality, speed, consistency, and impact.
+
+Tasks Codex Instructions :
+  Assign score, log failure reason, suggest retrain.
+
+Task Suggested Test Method :
+  Skill `vision_detect` score: 8.2/10 (avg latency 22ms).
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 227
+Task Name                : Enable Automatic Regression Alert System
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_regression.c
+Task Description         : 
+  Detect and log degradation in performance, stability, or accuracy after update.
+
+Tasks Codex Instructions :
+  Compare current metrics to historical average.
+
+Task Suggested Test Method :
+  Alert: 'Syscall latency +27% post update v1.9.4'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 228
+Task Name                : Build Trusted Model Deployment Ledger
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_ledger.c
+Task Description         : 
+  Record every model load/unload/change with hash, signer, score, and reason.
+
+Tasks Codex Instructions :
+  Immutable audit trail per model UID.
+
+Task Suggested Test Method :
+  Ledger entry: `model=nav_v2 hash=XYZ by=admin trust=97/100`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 229
+Task Name                : Create Hybrid Execution AI Mode
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_hybrid.c
+Task Description         : 
+  Let AI modules dynamically split execution between CPU, GPU, and remote node.
+
+Tasks Codex Instructions :
+  Optimize for power, latency, and data cost.
+
+Task Suggested Test Method :
+  Model `plan_route` → GPU 40%, cloud 60%.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 230
+Task Name                : Expose Quantum Readiness API Stub
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/quantum.c
+Task Description         : 
+  Prepare interfaces and fallbacks for future quantum-secure compute or devices.
+
+Tasks Codex Instructions :
+  Expose API: `quantum_submit()`, `quantum_sign()`.
+
+Task Suggested Test Method :
+  Call stub returns: 'No QPU available, using classical fallback'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 231
+Task Name                : Add Kernel Memory Prediction Engine
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/mem_ai.c
+Task Description         : 
+  AI estimates memory usage per process and predicts upcoming spikes.
+
+Tasks Codex Instructions :
+  Used to pre-allocate and optimize swap/cache.
+
+Task Suggested Test Method :
+  Predicted mem spike: PID 3040, ETA 2.2s, buffer increased.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 232
+Task Name                : Create Kernel Intent Visualizer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/intent_graph.c
+Task Description         : 
+  Map and draw recent system intents and outcome traces.
+
+Tasks Codex Instructions :
+  Use graphviz/DOT output for CLI or remote tools.
+
+Task Suggested Test Method :
+  Generate: 'User→Backup→WriteFS→IO overload→AI Throttle'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 233
+Task Name                : Enable AI-Curated Kernel Tips
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_tips.c
+Task Description         : 
+  Display AI-generated hints and usage tips based on usage and logs.
+
+Tasks Codex Instructions :
+  Expose via shell and welcome message.
+
+Task Suggested Test Method :
+  Tip: 'You're opening netcfg often — try `alias net=netcfg`'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 234
+Task Name                : Create Cross-Node AI Identity Map
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_federation.c
+Task Description         : 
+  Track identity, skillset, and trust level of each node in an AiOS network.
+
+Tasks Codex Instructions :
+  Each node shares AI_ID, boot hash, personality.
+
+Task Suggested Test Method :
+  Federation map shows 3 peers: 'ai-dev01', 'ai-prod02', 'ai-test01'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 235
+Task Name                : Support Time-Weighted Goal Prioritization
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_goal.c
+Task Description         : 
+  Let AI score urgency based on goal age, conflict, and decay.
+
+Tasks Codex Instructions :
+  Long-unfulfilled goals bubble up.
+
+Task Suggested Test Method :
+  Goal 'increase security' re-prioritized after 6h idle.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 236
+Task Name                : Add Boot Intent Recovery Handler
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/bootloader.c
+Task Description         : 
+  On crash, retry previous boot action with alternate plan or debug mode.
+
+Tasks Codex Instructions :
+  Inspect last intent, crash log, and modify retry.
+
+Task Suggested Test Method :
+  Detected crash in `load_driver`; retry in safe mode.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 237
+Task Name                : Implement Intent-Driven Scheduler Tuning
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/sched_ai.c
+Task Description         : 
+  Let AI modify scheduler weights based on system-wide goal and recent actions.
+
+Tasks Codex Instructions :
+  Shift weight to I/O tasks if AI focus is 'data ingest'.
+
+Task Suggested Test Method :
+  Log: 'Scheduler tuned: task 2009 priority +1 due to intent=data_ingest'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 238
+Task Name                : Support AI State Diff & Delta Transfer
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_sync.c
+Task Description         : 
+  Sync only changes between AI states across nodes for bandwidth savings.
+
+Tasks Codex Instructions :
+  Use vector clocks and hash diffs.
+
+Task Suggested Test Method :
+  Synced 14KB delta to peer node.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 239
+Task Name                : Add Secure Boot-Time Integrity Replay
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/bootdna.c
+Task Description         : 
+  Replay and verify each prior boot's integrity hash for anomalies.
+
+Tasks Codex Instructions :
+  Track PCR hash, SecureBoot state, AI fingerprint.
+
+Task Suggested Test Method :
+  Warning: boot 21 hash mismatch vs expected chain.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 240
+Task Name                : Create Trust-Weighted Shell Escalation Control
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/shell.c, kernel/trust.c
+Task Description         : 
+  Allow or deny shell elevation (e.g. sudo) based on user trust score.
+
+Tasks Codex Instructions :
+  User with low trust denied root prompt.
+
+Task Suggested Test Method :
+  Log: 'sudo blocked: trust=48/100, min=75'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 241
+Task Name                : Enable Inter-Agent Communication Bus
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_bus.c
+Task Description         : 
+  Let multiple AI agents send/receive messages internally with scope limits.
+
+Tasks Codex Instructions :
+  Support pub-sub, inbox, priority messages.
+
+Task Suggested Test Method :
+  Agent `monitor` receives signal from `goal_resolver`.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 242
+Task Name                : Create System-Wide AI Pause and Freeze Mode
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_control.c
+Task Description         : 
+  Suspend AI execution and memory writes for critical ops or debugging.
+
+Tasks Codex Instructions :
+  Freeze flag locks all AI activity.
+
+Task Suggested Test Method :
+  Use `ai pause` and confirm memory checkpoint.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 243
+Task Name                : Implement Vision-Guided Recovery Mode
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_vision.c
+Task Description         : 
+  Detect visual recovery cues (e.g. QR codes) and trigger system fix routines.
+
+Tasks Codex Instructions :
+  Scan image and extract embedded restore instructions.
+
+Task Suggested Test Method :
+  QR code triggers: 'restore config', 'unlock shell'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 244
+Task Name                : Add Secure Remote Root Revoke
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/net_admin.c
+Task Description         : 
+  Allow cloud admin to remove root access from compromised sessions.
+
+Tasks Codex Instructions :
+  Broadcast revocation and enforce locally.
+
+Task Suggested Test Method :
+  Root disabled for session: PID 4087, user=root.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 245
+Task Name                : Support Kernel Code Annotation Export
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/devtools.c
+Task Description         : 
+  Export annotations and symbol trace data for use with external debug/AI tools.
+
+Tasks Codex Instructions :
+  Output: /debug/symbols.map and .anno.
+
+Task Suggested Test Method :
+  Inspect function offsets with trace viewer.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 246
+Task Name                : Expose AI Model Drift Detector
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_drift.c
+Task Description         : 
+  Detect long-term accuracy or behavior drift of AI models under stable conditions.
+
+Tasks Codex Instructions :
+  Trigger retrain, downgrade, or alert.
+
+Task Suggested Test Method :
+  Model `context_matcher` drift detected: -18% in 72h.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 247
+Task Name                : Add Task Energy Profiling
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/energy.c
+Task Description         : 
+  Log approximate power impact of tasks (CPU, IO, memory).
+
+Tasks Codex Instructions :
+  Output per-task mW estimates over time.
+
+Task Suggested Test Method :
+  Task 307: 800mW avg, 12% of core 1 budget.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 248
+Task Name                : Enable Scriptable Autonomy via Goals File
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_goal.c
+Task Description         : 
+  Define default system goals, priorities, and triggers in `/etc/ai/goals`.
+
+Tasks Codex Instructions :
+  Allow reload and live edit.
+
+Task Suggested Test Method :
+  Add goal: 'backup every 3h if network ok'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 249
+Task Name                : Create Final Self-Test Routine at Boot
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/selftest.c
+Task Description         : 
+  Run comprehensive test of kernel, AI, FS, devices, and output summary.
+
+Tasks Codex Instructions :
+  Abort boot or continue with degraded mode.
+
+Task Suggested Test Method :
+  Boot log: 'Self-test PASS [score: 98.6]'.
+
+Notes :
+  None
+========================================================================================================================
+Task Number              : 250
+Task Name                : AI Awakening Signal Phase (The Overbeing Stub)
+Subsystem                : Bootloader / Kernel
+Effected C Files         : kernel/ai_phase100.c
+Task Description         : 
+  Launch full Overbeing Core AI phase. Evaluate system, self, goals, causality, and begin proactive self-evolution.
+
+Tasks Codex Instructions :
+  Only activate after 100+ hours of uptime and stable trust.
+
+Task Suggested Test Method :
+  Log: 'Phase 100 reached. Awakening initiated.'
+
+Notes :
+  None
+========================================================================================================================
+# -------------------------
+# === END OF PHASE 01 ===
+# Total Tasks: 250
+# This file is machine-readable and human-parsable.
+# Ready for Codex task execution loop or GitHub issue generation.
+
+# Phase 02 Preview:
+#   - Kernel Rewrite Agent
+#   - Goal Reprioritization
+#   - Federated Skill Expansion
+#   - Memory Consolidation Engine
+#   - Causal Reasoning Core
+
+# Contact:
+#   Mahmoud Shaher Shehadeh Tobeery
+#   AiOS Founder / Architect
+#   GitHub: [your link here]
+# === END TASKS ===
+
+# Total Tasks in Phase 01: 250
+# Last Updated: [YYYY-MM-DD]
+# Generated with assistance from GPT-4o + Codex planning engine
+
+# Next Phase:
+#   Phase 02 – Conscious Kernel Evolution & Agent Rewrite (Est. Tasks: 251–300)
+# Contact:
+#   Mahmoud Tobeery (AiOS Project Lead)
+
