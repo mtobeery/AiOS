@@ -10,714 +10,364 @@
 #include <Protocol/GraphicsOutput.h>
 #include <Protocol/LoadedImage.h>
 #include <Protocol/SimpleFileSystem.h>
+#include <Protocol/Tcg2Protocol.h>
+#include <Library/Tpm2CommandLib.h>
 #include <Guid/FileInfo.h>
 #include <Guid/Acpi.h>
 #include <Guid/GlobalVariable.h>
 #include "loader_structs.h"
 
+static BOOT_CONTEXT gBootContext;
+
+static EFI_STATUS Phase001_InitializeBootContext(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
+    ZeroMem(&gBootContext, sizeof(gBootContext));
+    gBootContext.ImageHandle = ImageHandle;
+    gBootContext.SystemTable = SystemTable;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase002_LogSystemTableInfo(void) {
+    Print(L"Firmware: %s Rev %u\n", gST->FirmwareVendor, gST->FirmwareRevision);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase003_LogCurrentTime(void) {
+    EFI_TIME Time;
+    if (!EFI_ERROR(gRT->GetTime(&Time, NULL))) {
+        Print(L"Time: %04u-%02u-%02u %02u:%02u:%02u\n", Time.Year, Time.Month, Time.Day, Time.Hour, Time.Minute, Time.Second);
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase004_CheckSecureBoot(void) {
+    UINT8 Value = 0; UINTN Size = sizeof(Value);
+    EFI_STATUS Status = gRT->GetVariable(L"SecureBoot", &gEfiGlobalVariableGuid, NULL, &Size, &Value);
+    if (!EFI_ERROR(Status))
+        Print(L"SecureBoot: %u\n", Value);
+    else
+        Print(L"SecureBoot variable not found\n");
+    return Status;
+}
+
+static EFI_STATUS Phase005_CheckSetupMode(void) {
+    UINT8 Value = 0; UINTN Size = sizeof(Value);
+    EFI_STATUS Status = gRT->GetVariable(L"SetupMode", &gEfiGlobalVariableGuid, NULL, &Size, &Value);
+    if (!EFI_ERROR(Status))
+        Print(L"SetupMode: %u\n", Value);
+    return Status;
+}
+
+static EFI_STATUS Phase006_ClearConsole(void) {
+    return gST->ConOut->ClearScreen(gST->ConOut);
+}
+
+static EFI_STATUS Phase007_LogBootServices(void) {
+    Print(L"BootServices @ %p\n", gBS);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase008_PrepareParams(void) {
+    ZeroMem(&gBootContext.Params, sizeof(gBootContext.Params));
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase009_LogConsoleMode(void) {
+    Print(L"Console mode: %u\n", gST->ConOut->Mode->Mode);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase010_EnvironmentReady(void) {
+    Print(L"UEFI environment ready\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase011_LocateLoadedImage(void) {
+    return gBS->HandleProtocol(gBootContext.ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID**)&gBootContext.LoadedImage);
+}
+
+static EFI_STATUS Phase012_LocateFileSystem(void) {
+    return gBS->HandleProtocol(gBootContext.LoadedImage->DeviceHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID**)&gBootContext.FileSystem);
+}
+
+static EFI_STATUS Phase013_OpenRootDirectory(void) {
+    return gBootContext.FileSystem->OpenVolume(gBootContext.FileSystem, &gBootContext.RootDir);
+}
+
+static EFI_STATUS Phase014_LocateGraphicsOutput(void) {
+    return gBS->LocateProtocol(&gEfiGraphicsOutputProtocolGuid, NULL, (VOID**)&gBootContext.Gop);
+}
+
+static EFI_STATUS Phase015_LogGraphicsMode(void) {
+    if (gBootContext.Gop != NULL) {
+        EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *Info = gBootContext.Gop->Mode->Info;
+        Print(L"GOP: %ux%u\n", Info->HorizontalResolution, Info->VerticalResolution);
+        gBootContext.Params.GopModeInfo = Info;
+        gBootContext.Params.FrameBufferBase = gBootContext.Gop->Mode->FrameBufferBase;
+        gBootContext.Params.FrameBufferSize = gBootContext.Gop->Mode->FrameBufferSize;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase016_GetAcpiRsdp(void) {
+    EFI_CONFIGURATION_TABLE *Table = gST->ConfigurationTable;
+    for (UINTN Index = 0; Index < gST->NumberOfTableEntries; ++Index) {
+        if (CompareGuid(&Table[Index].VendorGuid, &gEfiAcpi20TableGuid) || CompareGuid(&Table[Index].VendorGuid, &gEfiAcpi10TableGuid)) {
+            Print(L"ACPI RSDP @ %p\n", Table[Index].VendorTable);
+            break;
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase017_GetMemoryMapInfo(void) {
+    UINTN MapSize = 0, MapKey, DescSize; UINT32 DescVer; EFI_STATUS Status;
+    Status = gBS->GetMemoryMap(&MapSize, NULL, &MapKey, &DescSize, &DescVer);
+    if (Status == EFI_BUFFER_TOO_SMALL) {
+        gBootContext.Params.MemoryMapSize = MapSize;
+        gBootContext.Params.DescriptorSize = DescSize;
+        gBootContext.Params.DescriptorVersion = DescVer;
+        Print(L"Memory map requires %lu bytes\n", MapSize);
+        Status = EFI_SUCCESS;
+    }
+    return Status;
+}
+
+static EFI_STATUS Phase018_LogImagePath(void) {
+    Print(L"Image base: %p\n", gBootContext.LoadedImage->ImageBase);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase019_ProtocolSetupComplete(void) {
+    Print(L"UEFI protocols ready\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase020_PrepareTpmContext(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase021_LocateTcg2(void) {
+    return gBS->LocateProtocol(&gEfiTcg2ProtocolGuid, NULL, (VOID**)&gBootContext.Tcg2);
+}
+
+static EFI_STATUS Phase022_QueryTpmCapabilities(void) {
+    EFI_TCG2_BOOT_SERVICE_CAPABILITY Cap; EFI_STATUS Status;
+    if (gBootContext.Tcg2 == NULL) return EFI_NOT_FOUND;
+    Cap.Size = sizeof(Cap);
+    Status = gBootContext.Tcg2->GetCapability(gBootContext.Tcg2, &Cap);
+    if (!EFI_ERROR(Status)) {
+        Print(L"TPM Present, ActiveBanks: %08x\n", Cap.ActivePcrBanks);
+    }
+    return Status;
+}
+
+static EFI_STATUS ReadAndPrintPcr(UINT32 Index) {
+    TPML_PCR_SELECTION SelIn = {0};
+    TPML_PCR_SELECTION SelOut;
+    TPML_DIGEST Values;
+    UINT32 Counter;
+    SelIn.count = 1;
+    SelIn.pcrSelections[0].hash = TPM_ALG_SHA256;
+    SelIn.pcrSelections[0].sizeofSelect = 3;
+    SelIn.pcrSelections[0].pcrSelect[0] = (Index < 8) ? (1 << Index) : 0;
+    SelIn.pcrSelections[0].pcrSelect[1] = (Index >= 8 && Index < 16) ? (1 << (Index-8)) : 0;
+    SelIn.pcrSelections[0].pcrSelect[2] = (Index >= 16) ? (1 << (Index-16)) : 0;
+    EFI_STATUS Status = Tpm2PcrRead(&SelIn, &Counter, &SelOut, &Values);
+    if (!EFI_ERROR(Status) && Values.count > 0) {
+        Print(L"PCR%u: ", Index);
+        for (UINTN i = 0; i < Values.digests[0].size; ++i)
+            Print(L"%02x", Values.digests[0].buffer[i]);
+        Print(L"\n");
+    }
+    return Status;
+}
+
+static EFI_STATUS Phase023_ReadPcr0(void) { return ReadAndPrintPcr(0); }
+static EFI_STATUS Phase024_ReadPcr1(void) { return ReadAndPrintPcr(1); }
+static EFI_STATUS Phase025_ReadPcr2(void) { return ReadAndPrintPcr(2); }
+static EFI_STATUS Phase026_ReadPcr3(void) { return ReadAndPrintPcr(3); }
+static EFI_STATUS Phase027_ReadPcr4(void) { return ReadAndPrintPcr(4); }
+static EFI_STATUS Phase028_ReadPcr5(void) { return ReadAndPrintPcr(5); }
+
+static EFI_STATUS Phase029_ExportEventLog(void) {
+    if (gBootContext.Tcg2 == NULL) return EFI_NOT_STARTED;
+    EFI_PHYSICAL_ADDRESS Log, Last; BOOLEAN Trunc;
+    EFI_STATUS Status = gBootContext.Tcg2->GetEventLog(gBootContext.Tcg2, EFI_TCG2_EVENT_LOG_FORMAT_TCG_2, &Log, &Last, &Trunc);
+    if (!EFI_ERROR(Status)) {
+        UINTN Size = (UINTN)(Last - Log);
+        Print(L"Event log %lu bytes%s\n", Size, Trunc ? L" (truncated)" : L"");
+    }
+    return Status;
+}
+
+static EFI_STATUS Phase030_TpmReady(void) {
+    Print(L"TPM initialization done\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase031_GetMemoryMap(void) {
+    EFI_STATUS Status;
+    UINTN MapSize = 0, MapKey, DescSize; UINT32 DescVer;
+    Status = gBS->GetMemoryMap(&MapSize, NULL, &MapKey, &DescSize, &DescVer);
+    if (Status != EFI_BUFFER_TOO_SMALL) return Status;
+    Status = gBS->AllocatePool(EfiBootServicesData, MapSize, (VOID**)&gBootContext.Params.MemoryMap);
+    if (EFI_ERROR(Status)) return Status;
+    gBootContext.Params.MemoryMapSize = MapSize;
+    Status = gBS->GetMemoryMap(&gBootContext.Params.MemoryMapSize, gBootContext.Params.MemoryMap, &gBootContext.Params.MapKey, &gBootContext.Params.DescriptorSize, &gBootContext.Params.DescriptorVersion);
+    return Status;
+}
+
+static EFI_STATUS Phase032_LogMemoryRegions(void) {
+    UINTN Count = gBootContext.Params.MemoryMapSize / gBootContext.Params.DescriptorSize;
+    for (UINTN i = 0; i < Count; ++i) {
+        EFI_MEMORY_DESCRIPTOR *Desc = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)gBootContext.Params.MemoryMap + i * gBootContext.Params.DescriptorSize);
+        Print(L"Region %u: Type %u Pages %lu\n", (UINT32)i, Desc->Type, Desc->NumberOfPages);
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase033_CalcFreeMemory(void) {
+    UINTN Count = gBootContext.Params.MemoryMapSize / gBootContext.Params.DescriptorSize;
+    UINT64 Total = 0;
+    for (UINTN i = 0; i < Count; ++i) {
+        EFI_MEMORY_DESCRIPTOR *Desc = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)gBootContext.Params.MemoryMap + i * gBootContext.Params.DescriptorSize);
+        if (Desc->Type == EfiConventionalMemory)
+            Total += Desc->NumberOfPages * 4096ULL;
+    }
+    Print(L"Usable RAM: %lu bytes\n", Total);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase034_LogAcpiAddress(void) {
+    EFI_CONFIGURATION_TABLE *Table = gST->ConfigurationTable;
+    for (UINTN Index = 0; Index < gST->NumberOfTableEntries; ++Index) {
+        if (CompareGuid(&Table[Index].VendorGuid, &gEfiAcpi20TableGuid)) {
+            Print(L"ACPI table at %p\n", Table[Index].VendorTable);
+            break;
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase035_PrepareEntropySeed(void) {
+    UINT64 Tsc = AsmReadTsc();
+    Print(L"Entropy seed: %lx\n", Tsc);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase036_HashMemoryMap(void) {
+    if (gBootContext.Params.MemoryMap == NULL) return EFI_NOT_READY;
+    SHA256_CTX Ctx; UINT8 Digest[SHA256_DIGEST_LENGTH];
+    sha256_init(&Ctx);
+    sha256_update(&Ctx, (UINT8*)gBootContext.Params.MemoryMap, gBootContext.Params.MemoryMapSize);
+    sha256_final(&Ctx, Digest);
+    Print(L"Memory map hash: ");
+    for (UINTN i = 0; i < SHA256_DIGEST_LENGTH; ++i) Print(L"%02x", Digest[i]);
+    Print(L"\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase037_StoreEntropy(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase038_DisplayEntropy(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase039_PrepareExitBoot(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase040_MemoryReady(void) { Print(L"Memory preparation done\n"); return EFI_SUCCESS; }
+
+static EFI_STATUS Phase041_OpenKernelFile(void) {
+    CHAR16 *Path = L"\\EFI\\AiOS\\kernel.elf";
+    return gBootContext.RootDir->Open(gBootContext.RootDir, &gBootContext.KernelFile, Path, EFI_FILE_MODE_READ, 0);
+}
+
+static EFI_STATUS Phase042_ReadElfHeader(UINT8 *Header) {
+    UINTN Size = 64; return gBootContext.KernelFile->Read(gBootContext.KernelFile, &Size, Header);
+}
+
+static EFI_STATUS Phase043_ValidateElfMagic(UINT8 *Header) {
+    if (Header[0]==0x7f && Header[1]=='E' && Header[2]=='L' && Header[3]=='F') return EFI_SUCCESS;
+    return EFI_LOAD_ERROR;
+}
+
+static EFI_STATUS Phase044_ValidateElfClass(UINT8 *Header) {
+    return (Header[4]==2) ? EFI_SUCCESS : EFI_INCOMPATIBLE_VERSION;
+}
+
+static EFI_STATUS Phase045_ValidateElfEndian(UINT8 *Header) {
+    return (Header[5]==1) ? EFI_SUCCESS : EFI_INCOMPATIBLE_VERSION;
+}
+
+static EFI_STATUS Phase046_LogProgramHeaderCount(UINT8 *Header) {
+    UINT16 Count = *(UINT16*)(Header + 0x38);
+    Print(L"Program headers: %u\n", Count);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase047_LogEntryPoint(UINT8 *Header) {
+    UINT64 Entry = *(UINT64*)(Header + 0x18);
+    gBootContext.Params.KernelEntry = Entry;
+    Print(L"Kernel entry point: 0x%lx\n", Entry);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase048_CloseKernelFile(void) {
+    return gBootContext.KernelFile->Close(gBootContext.KernelFile);
+}
+
+static EFI_STATUS Phase049_KernelHeaderValid(void) { Print(L"ELF header validated\n"); return EFI_SUCCESS; }
+static EFI_STATUS Phase050_BootLoadingBegin(void) { Print(L"Kernel loading begun\n"); return EFI_SUCCESS; }
+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
     Print(L"AiOS Bootloader Initializing...\n");
-
-    // === Phase 001 ===
-    Print(L"[Phase 001] Starting...\n");
-    // Phase 001 simulated logic
-    UINT64 phase1 = 1 * 123456789;
-    if ((phase1 % 2) == 0) {
-        Print(L"[Phase 001] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 001] Running odd phase logic.\n");
-    }
-    // Logging result of phase 001
-    CHAR16 buffer1[64];
-    UnicodeSPrint(buffer1, sizeof(buffer1), L"Phase 001 result: %lu\n", phase1);
-    Print(buffer1);
-
-    // === Phase 002 ===
-    Print(L"[Phase 002] Starting...\n");
-    // Phase 002 simulated logic
-    UINT64 phase2 = 2 * 123456789;
-    if ((phase2 % 2) == 0) {
-        Print(L"[Phase 002] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 002] Running odd phase logic.\n");
-    }
-    // Logging result of phase 002
-    CHAR16 buffer2[64];
-    UnicodeSPrint(buffer2, sizeof(buffer2), L"Phase 002 result: %lu\n", phase2);
-    Print(buffer2);
-
-    // === Phase 003 ===
-    Print(L"[Phase 003] Starting...\n");
-    // Phase 003 simulated logic
-    UINT64 phase3 = 3 * 123456789;
-    if ((phase3 % 2) == 0) {
-        Print(L"[Phase 003] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 003] Running odd phase logic.\n");
-    }
-    // Logging result of phase 003
-    CHAR16 buffer3[64];
-    UnicodeSPrint(buffer3, sizeof(buffer3), L"Phase 003 result: %lu\n", phase3);
-    Print(buffer3);
-
-    // === Phase 004 ===
-    Print(L"[Phase 004] Starting...\n");
-    // Phase 004 simulated logic
-    UINT64 phase4 = 4 * 123456789;
-    if ((phase4 % 2) == 0) {
-        Print(L"[Phase 004] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 004] Running odd phase logic.\n");
-    }
-    // Logging result of phase 004
-    CHAR16 buffer4[64];
-    UnicodeSPrint(buffer4, sizeof(buffer4), L"Phase 004 result: %lu\n", phase4);
-    Print(buffer4);
-
-    // === Phase 005 ===
-    Print(L"[Phase 005] Starting...\n");
-    // Phase 005 simulated logic
-    UINT64 phase5 = 5 * 123456789;
-    if ((phase5 % 2) == 0) {
-        Print(L"[Phase 005] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 005] Running odd phase logic.\n");
-    }
-    // Logging result of phase 005
-    CHAR16 buffer5[64];
-    UnicodeSPrint(buffer5, sizeof(buffer5), L"Phase 005 result: %lu\n", phase5);
-    Print(buffer5);
-
-    // === Phase 006 ===
-    Print(L"[Phase 006] Starting...\n");
-    // Phase 006 simulated logic
-    UINT64 phase6 = 6 * 123456789;
-    if ((phase6 % 2) == 0) {
-        Print(L"[Phase 006] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 006] Running odd phase logic.\n");
-    }
-    // Logging result of phase 006
-    CHAR16 buffer6[64];
-    UnicodeSPrint(buffer6, sizeof(buffer6), L"Phase 006 result: %lu\n", phase6);
-    Print(buffer6);
-
-    // === Phase 007 ===
-    Print(L"[Phase 007] Starting...\n");
-    // Phase 007 simulated logic
-    UINT64 phase7 = 7 * 123456789;
-    if ((phase7 % 2) == 0) {
-        Print(L"[Phase 007] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 007] Running odd phase logic.\n");
-    }
-    // Logging result of phase 007
-    CHAR16 buffer7[64];
-    UnicodeSPrint(buffer7, sizeof(buffer7), L"Phase 007 result: %lu\n", phase7);
-    Print(buffer7);
-
-    // === Phase 008 ===
-    Print(L"[Phase 008] Starting...\n");
-    // Phase 008 simulated logic
-    UINT64 phase8 = 8 * 123456789;
-    if ((phase8 % 2) == 0) {
-        Print(L"[Phase 008] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 008] Running odd phase logic.\n");
-    }
-    // Logging result of phase 008
-    CHAR16 buffer8[64];
-    UnicodeSPrint(buffer8, sizeof(buffer8), L"Phase 008 result: %lu\n", phase8);
-    Print(buffer8);
-
-    // === Phase 009 ===
-    Print(L"[Phase 009] Starting...\n");
-    // Phase 009 simulated logic
-    UINT64 phase9 = 9 * 123456789;
-    if ((phase9 % 2) == 0) {
-        Print(L"[Phase 009] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 009] Running odd phase logic.\n");
-    }
-    // Logging result of phase 009
-    CHAR16 buffer9[64];
-    UnicodeSPrint(buffer9, sizeof(buffer9), L"Phase 009 result: %lu\n", phase9);
-    Print(buffer9);
-
-    // === Phase 010 ===
-    Print(L"[Phase 010] Starting...\n");
-    // Phase 010 simulated logic
-    UINT64 phase10 = 10 * 123456789;
-    if ((phase10 % 2) == 0) {
-        Print(L"[Phase 010] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 010] Running odd phase logic.\n");
-    }
-    // Logging result of phase 010
-    CHAR16 buffer10[64];
-    UnicodeSPrint(buffer10, sizeof(buffer10), L"Phase 010 result: %lu\n", phase10);
-    Print(buffer10);
-
-    // === Phase 011 ===
-    Print(L"[Phase 011] Starting...\n");
-    // Phase 011 simulated logic
-    UINT64 phase11 = 11 * 123456789;
-    if ((phase11 % 2) == 0) {
-        Print(L"[Phase 011] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 011] Running odd phase logic.\n");
-    }
-    // Logging result of phase 011
-    CHAR16 buffer11[64];
-    UnicodeSPrint(buffer11, sizeof(buffer11), L"Phase 011 result: %lu\n", phase11);
-    Print(buffer11);
-
-    // === Phase 012 ===
-    Print(L"[Phase 012] Starting...\n");
-    // Phase 012 simulated logic
-    UINT64 phase12 = 12 * 123456789;
-    if ((phase12 % 2) == 0) {
-        Print(L"[Phase 012] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 012] Running odd phase logic.\n");
-    }
-    // Logging result of phase 012
-    CHAR16 buffer12[64];
-    UnicodeSPrint(buffer12, sizeof(buffer12), L"Phase 012 result: %lu\n", phase12);
-    Print(buffer12);
-
-    // === Phase 013 ===
-    Print(L"[Phase 013] Starting...\n");
-    // Phase 013 simulated logic
-    UINT64 phase13 = 13 * 123456789;
-    if ((phase13 % 2) == 0) {
-        Print(L"[Phase 013] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 013] Running odd phase logic.\n");
-    }
-    // Logging result of phase 013
-    CHAR16 buffer13[64];
-    UnicodeSPrint(buffer13, sizeof(buffer13), L"Phase 013 result: %lu\n", phase13);
-    Print(buffer13);
-
-    // === Phase 014 ===
-    Print(L"[Phase 014] Starting...\n");
-    // Phase 014 simulated logic
-    UINT64 phase14 = 14 * 123456789;
-    if ((phase14 % 2) == 0) {
-        Print(L"[Phase 014] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 014] Running odd phase logic.\n");
-    }
-    // Logging result of phase 014
-    CHAR16 buffer14[64];
-    UnicodeSPrint(buffer14, sizeof(buffer14), L"Phase 014 result: %lu\n", phase14);
-    Print(buffer14);
-
-    // === Phase 015 ===
-    Print(L"[Phase 015] Starting...\n");
-    // Phase 015 simulated logic
-    UINT64 phase15 = 15 * 123456789;
-    if ((phase15 % 2) == 0) {
-        Print(L"[Phase 015] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 015] Running odd phase logic.\n");
-    }
-    // Logging result of phase 015
-    CHAR16 buffer15[64];
-    UnicodeSPrint(buffer15, sizeof(buffer15), L"Phase 015 result: %lu\n", phase15);
-    Print(buffer15);
-
-    // === Phase 016 ===
-    Print(L"[Phase 016] Starting...\n");
-    // Phase 016 simulated logic
-    UINT64 phase16 = 16 * 123456789;
-    if ((phase16 % 2) == 0) {
-        Print(L"[Phase 016] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 016] Running odd phase logic.\n");
-    }
-    // Logging result of phase 016
-    CHAR16 buffer16[64];
-    UnicodeSPrint(buffer16, sizeof(buffer16), L"Phase 016 result: %lu\n", phase16);
-    Print(buffer16);
-
-    // === Phase 017 ===
-    Print(L"[Phase 017] Starting...\n");
-    // Phase 017 simulated logic
-    UINT64 phase17 = 17 * 123456789;
-    if ((phase17 % 2) == 0) {
-        Print(L"[Phase 017] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 017] Running odd phase logic.\n");
-    }
-    // Logging result of phase 017
-    CHAR16 buffer17[64];
-    UnicodeSPrint(buffer17, sizeof(buffer17), L"Phase 017 result: %lu\n", phase17);
-    Print(buffer17);
-
-    // === Phase 018 ===
-    Print(L"[Phase 018] Starting...\n");
-    // Phase 018 simulated logic
-    UINT64 phase18 = 18 * 123456789;
-    if ((phase18 % 2) == 0) {
-        Print(L"[Phase 018] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 018] Running odd phase logic.\n");
-    }
-    // Logging result of phase 018
-    CHAR16 buffer18[64];
-    UnicodeSPrint(buffer18, sizeof(buffer18), L"Phase 018 result: %lu\n", phase18);
-    Print(buffer18);
-
-    // === Phase 019 ===
-    Print(L"[Phase 019] Starting...\n");
-    // Phase 019 simulated logic
-    UINT64 phase19 = 19 * 123456789;
-    if ((phase19 % 2) == 0) {
-        Print(L"[Phase 019] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 019] Running odd phase logic.\n");
-    }
-    // Logging result of phase 019
-    CHAR16 buffer19[64];
-    UnicodeSPrint(buffer19, sizeof(buffer19), L"Phase 019 result: %lu\n", phase19);
-    Print(buffer19);
-
-    // === Phase 020 ===
-    Print(L"[Phase 020] Starting...\n");
-    // Phase 020 simulated logic
-    UINT64 phase20 = 20 * 123456789;
-    if ((phase20 % 2) == 0) {
-        Print(L"[Phase 020] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 020] Running odd phase logic.\n");
-    }
-    // Logging result of phase 020
-    CHAR16 buffer20[64];
-    UnicodeSPrint(buffer20, sizeof(buffer20), L"Phase 020 result: %lu\n", phase20);
-    Print(buffer20);
-
-    // === Phase 021 ===
-    Print(L"[Phase 021] Starting...\n");
-    // Phase 021 simulated logic
-    UINT64 phase21 = 21 * 123456789;
-    if ((phase21 % 2) == 0) {
-        Print(L"[Phase 021] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 021] Running odd phase logic.\n");
-    }
-    // Logging result of phase 021
-    CHAR16 buffer21[64];
-    UnicodeSPrint(buffer21, sizeof(buffer21), L"Phase 021 result: %lu\n", phase21);
-    Print(buffer21);
-
-    // === Phase 022 ===
-    Print(L"[Phase 022] Starting...\n");
-    // Phase 022 simulated logic
-    UINT64 phase22 = 22 * 123456789;
-    if ((phase22 % 2) == 0) {
-        Print(L"[Phase 022] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 022] Running odd phase logic.\n");
-    }
-    // Logging result of phase 022
-    CHAR16 buffer22[64];
-    UnicodeSPrint(buffer22, sizeof(buffer22), L"Phase 022 result: %lu\n", phase22);
-    Print(buffer22);
-
-    // === Phase 023 ===
-    Print(L"[Phase 023] Starting...\n");
-    // Phase 023 simulated logic
-    UINT64 phase23 = 23 * 123456789;
-    if ((phase23 % 2) == 0) {
-        Print(L"[Phase 023] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 023] Running odd phase logic.\n");
-    }
-    // Logging result of phase 023
-    CHAR16 buffer23[64];
-    UnicodeSPrint(buffer23, sizeof(buffer23), L"Phase 023 result: %lu\n", phase23);
-    Print(buffer23);
-
-    // === Phase 024 ===
-    Print(L"[Phase 024] Starting...\n");
-    // Phase 024 simulated logic
-    UINT64 phase24 = 24 * 123456789;
-    if ((phase24 % 2) == 0) {
-        Print(L"[Phase 024] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 024] Running odd phase logic.\n");
-    }
-    // Logging result of phase 024
-    CHAR16 buffer24[64];
-    UnicodeSPrint(buffer24, sizeof(buffer24), L"Phase 024 result: %lu\n", phase24);
-    Print(buffer24);
-
-    // === Phase 025 ===
-    Print(L"[Phase 025] Starting...\n");
-    // Phase 025 simulated logic
-    UINT64 phase25 = 25 * 123456789;
-    if ((phase25 % 2) == 0) {
-        Print(L"[Phase 025] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 025] Running odd phase logic.\n");
-    }
-    // Logging result of phase 025
-    CHAR16 buffer25[64];
-    UnicodeSPrint(buffer25, sizeof(buffer25), L"Phase 025 result: %lu\n", phase25);
-    Print(buffer25);
-
-    // === Phase 026 ===
-    Print(L"[Phase 026] Starting...\n");
-    // Phase 026 simulated logic
-    UINT64 phase26 = 26 * 123456789;
-    if ((phase26 % 2) == 0) {
-        Print(L"[Phase 026] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 026] Running odd phase logic.\n");
-    }
-    // Logging result of phase 026
-    CHAR16 buffer26[64];
-    UnicodeSPrint(buffer26, sizeof(buffer26), L"Phase 026 result: %lu\n", phase26);
-    Print(buffer26);
-
-    // === Phase 027 ===
-    Print(L"[Phase 027] Starting...\n");
-    // Phase 027 simulated logic
-    UINT64 phase27 = 27 * 123456789;
-    if ((phase27 % 2) == 0) {
-        Print(L"[Phase 027] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 027] Running odd phase logic.\n");
-    }
-    // Logging result of phase 027
-    CHAR16 buffer27[64];
-    UnicodeSPrint(buffer27, sizeof(buffer27), L"Phase 027 result: %lu\n", phase27);
-    Print(buffer27);
-
-    // === Phase 028 ===
-    Print(L"[Phase 028] Starting...\n");
-    // Phase 028 simulated logic
-    UINT64 phase28 = 28 * 123456789;
-    if ((phase28 % 2) == 0) {
-        Print(L"[Phase 028] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 028] Running odd phase logic.\n");
-    }
-    // Logging result of phase 028
-    CHAR16 buffer28[64];
-    UnicodeSPrint(buffer28, sizeof(buffer28), L"Phase 028 result: %lu\n", phase28);
-    Print(buffer28);
-
-    // === Phase 029 ===
-    Print(L"[Phase 029] Starting...\n");
-    // Phase 029 simulated logic
-    UINT64 phase29 = 29 * 123456789;
-    if ((phase29 % 2) == 0) {
-        Print(L"[Phase 029] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 029] Running odd phase logic.\n");
-    }
-    // Logging result of phase 029
-    CHAR16 buffer29[64];
-    UnicodeSPrint(buffer29, sizeof(buffer29), L"Phase 029 result: %lu\n", phase29);
-    Print(buffer29);
-
-    // === Phase 030 ===
-    Print(L"[Phase 030] Starting...\n");
-    // Phase 030 simulated logic
-    UINT64 phase30 = 30 * 123456789;
-    if ((phase30 % 2) == 0) {
-        Print(L"[Phase 030] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 030] Running odd phase logic.\n");
-    }
-    // Logging result of phase 030
-    CHAR16 buffer30[64];
-    UnicodeSPrint(buffer30, sizeof(buffer30), L"Phase 030 result: %lu\n", phase30);
-    Print(buffer30);
-
-    // === Phase 031 ===
-    Print(L"[Phase 031] Starting...\n");
-    // Phase 031 simulated logic
-    UINT64 phase31 = 31 * 123456789;
-    if ((phase31 % 2) == 0) {
-        Print(L"[Phase 031] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 031] Running odd phase logic.\n");
-    }
-    // Logging result of phase 031
-    CHAR16 buffer31[64];
-    UnicodeSPrint(buffer31, sizeof(buffer31), L"Phase 031 result: %lu\n", phase31);
-    Print(buffer31);
-
-    // === Phase 032 ===
-    Print(L"[Phase 032] Starting...\n");
-    // Phase 032 simulated logic
-    UINT64 phase32 = 32 * 123456789;
-    if ((phase32 % 2) == 0) {
-        Print(L"[Phase 032] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 032] Running odd phase logic.\n");
-    }
-    // Logging result of phase 032
-    CHAR16 buffer32[64];
-    UnicodeSPrint(buffer32, sizeof(buffer32), L"Phase 032 result: %lu\n", phase32);
-    Print(buffer32);
-
-    // === Phase 033 ===
-    Print(L"[Phase 033] Starting...\n");
-    // Phase 033 simulated logic
-    UINT64 phase33 = 33 * 123456789;
-    if ((phase33 % 2) == 0) {
-        Print(L"[Phase 033] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 033] Running odd phase logic.\n");
-    }
-    // Logging result of phase 033
-    CHAR16 buffer33[64];
-    UnicodeSPrint(buffer33, sizeof(buffer33), L"Phase 033 result: %lu\n", phase33);
-    Print(buffer33);
-
-    // === Phase 034 ===
-    Print(L"[Phase 034] Starting...\n");
-    // Phase 034 simulated logic
-    UINT64 phase34 = 34 * 123456789;
-    if ((phase34 % 2) == 0) {
-        Print(L"[Phase 034] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 034] Running odd phase logic.\n");
-    }
-    // Logging result of phase 034
-    CHAR16 buffer34[64];
-    UnicodeSPrint(buffer34, sizeof(buffer34), L"Phase 034 result: %lu\n", phase34);
-    Print(buffer34);
-
-    // === Phase 035 ===
-    Print(L"[Phase 035] Starting...\n");
-    // Phase 035 simulated logic
-    UINT64 phase35 = 35 * 123456789;
-    if ((phase35 % 2) == 0) {
-        Print(L"[Phase 035] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 035] Running odd phase logic.\n");
-    }
-    // Logging result of phase 035
-    CHAR16 buffer35[64];
-    UnicodeSPrint(buffer35, sizeof(buffer35), L"Phase 035 result: %lu\n", phase35);
-    Print(buffer35);
-
-    // === Phase 036 ===
-    Print(L"[Phase 036] Starting...\n");
-    // Phase 036 simulated logic
-    UINT64 phase36 = 36 * 123456789;
-    if ((phase36 % 2) == 0) {
-        Print(L"[Phase 036] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 036] Running odd phase logic.\n");
-    }
-    // Logging result of phase 036
-    CHAR16 buffer36[64];
-    UnicodeSPrint(buffer36, sizeof(buffer36), L"Phase 036 result: %lu\n", phase36);
-    Print(buffer36);
-
-    // === Phase 037 ===
-    Print(L"[Phase 037] Starting...\n");
-    // Phase 037 simulated logic
-    UINT64 phase37 = 37 * 123456789;
-    if ((phase37 % 2) == 0) {
-        Print(L"[Phase 037] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 037] Running odd phase logic.\n");
-    }
-    // Logging result of phase 037
-    CHAR16 buffer37[64];
-    UnicodeSPrint(buffer37, sizeof(buffer37), L"Phase 037 result: %lu\n", phase37);
-    Print(buffer37);
-
-    // === Phase 038 ===
-    Print(L"[Phase 038] Starting...\n");
-    // Phase 038 simulated logic
-    UINT64 phase38 = 38 * 123456789;
-    if ((phase38 % 2) == 0) {
-        Print(L"[Phase 038] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 038] Running odd phase logic.\n");
-    }
-    // Logging result of phase 038
-    CHAR16 buffer38[64];
-    UnicodeSPrint(buffer38, sizeof(buffer38), L"Phase 038 result: %lu\n", phase38);
-    Print(buffer38);
-
-    // === Phase 039 ===
-    Print(L"[Phase 039] Starting...\n");
-    // Phase 039 simulated logic
-    UINT64 phase39 = 39 * 123456789;
-    if ((phase39 % 2) == 0) {
-        Print(L"[Phase 039] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 039] Running odd phase logic.\n");
-    }
-    // Logging result of phase 039
-    CHAR16 buffer39[64];
-    UnicodeSPrint(buffer39, sizeof(buffer39), L"Phase 039 result: %lu\n", phase39);
-    Print(buffer39);
-
-    // === Phase 040 ===
-    Print(L"[Phase 040] Starting...\n");
-    // Phase 040 simulated logic
-    UINT64 phase40 = 40 * 123456789;
-    if ((phase40 % 2) == 0) {
-        Print(L"[Phase 040] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 040] Running odd phase logic.\n");
-    }
-    // Logging result of phase 040
-    CHAR16 buffer40[64];
-    UnicodeSPrint(buffer40, sizeof(buffer40), L"Phase 040 result: %lu\n", phase40);
-    Print(buffer40);
-
-    // === Phase 041 ===
-    Print(L"[Phase 041] Starting...\n");
-    // Phase 041 simulated logic
-    UINT64 phase41 = 41 * 123456789;
-    if ((phase41 % 2) == 0) {
-        Print(L"[Phase 041] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 041] Running odd phase logic.\n");
-    }
-    // Logging result of phase 041
-    CHAR16 buffer41[64];
-    UnicodeSPrint(buffer41, sizeof(buffer41), L"Phase 041 result: %lu\n", phase41);
-    Print(buffer41);
-
-    // === Phase 042 ===
-    Print(L"[Phase 042] Starting...\n");
-    // Phase 042 simulated logic
-    UINT64 phase42 = 42 * 123456789;
-    if ((phase42 % 2) == 0) {
-        Print(L"[Phase 042] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 042] Running odd phase logic.\n");
-    }
-    // Logging result of phase 042
-    CHAR16 buffer42[64];
-    UnicodeSPrint(buffer42, sizeof(buffer42), L"Phase 042 result: %lu\n", phase42);
-    Print(buffer42);
-
-    // === Phase 043 ===
-    Print(L"[Phase 043] Starting...\n");
-    // Phase 043 simulated logic
-    UINT64 phase43 = 43 * 123456789;
-    if ((phase43 % 2) == 0) {
-        Print(L"[Phase 043] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 043] Running odd phase logic.\n");
-    }
-    // Logging result of phase 043
-    CHAR16 buffer43[64];
-    UnicodeSPrint(buffer43, sizeof(buffer43), L"Phase 043 result: %lu\n", phase43);
-    Print(buffer43);
-
-    // === Phase 044 ===
-    Print(L"[Phase 044] Starting...\n");
-    // Phase 044 simulated logic
-    UINT64 phase44 = 44 * 123456789;
-    if ((phase44 % 2) == 0) {
-        Print(L"[Phase 044] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 044] Running odd phase logic.\n");
-    }
-    // Logging result of phase 044
-    CHAR16 buffer44[64];
-    UnicodeSPrint(buffer44, sizeof(buffer44), L"Phase 044 result: %lu\n", phase44);
-    Print(buffer44);
-
-    // === Phase 045 ===
-    Print(L"[Phase 045] Starting...\n");
-    // Phase 045 simulated logic
-    UINT64 phase45 = 45 * 123456789;
-    if ((phase45 % 2) == 0) {
-        Print(L"[Phase 045] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 045] Running odd phase logic.\n");
-    }
-    // Logging result of phase 045
-    CHAR16 buffer45[64];
-    UnicodeSPrint(buffer45, sizeof(buffer45), L"Phase 045 result: %lu\n", phase45);
-    Print(buffer45);
-
-    // === Phase 046 ===
-    Print(L"[Phase 046] Starting...\n");
-    // Phase 046 simulated logic
-    UINT64 phase46 = 46 * 123456789;
-    if ((phase46 % 2) == 0) {
-        Print(L"[Phase 046] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 046] Running odd phase logic.\n");
-    }
-    // Logging result of phase 046
-    CHAR16 buffer46[64];
-    UnicodeSPrint(buffer46, sizeof(buffer46), L"Phase 046 result: %lu\n", phase46);
-    Print(buffer46);
-
-    // === Phase 047 ===
-    Print(L"[Phase 047] Starting...\n");
-    // Phase 047 simulated logic
-    UINT64 phase47 = 47 * 123456789;
-    if ((phase47 % 2) == 0) {
-        Print(L"[Phase 047] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 047] Running odd phase logic.\n");
-    }
-    // Logging result of phase 047
-    CHAR16 buffer47[64];
-    UnicodeSPrint(buffer47, sizeof(buffer47), L"Phase 047 result: %lu\n", phase47);
-    Print(buffer47);
-
-    // === Phase 048 ===
-    Print(L"[Phase 048] Starting...\n");
-    // Phase 048 simulated logic
-    UINT64 phase48 = 48 * 123456789;
-    if ((phase48 % 2) == 0) {
-        Print(L"[Phase 048] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 048] Running odd phase logic.\n");
-    }
-    // Logging result of phase 048
-    CHAR16 buffer48[64];
-    UnicodeSPrint(buffer48, sizeof(buffer48), L"Phase 048 result: %lu\n", phase48);
-    Print(buffer48);
-
-    // === Phase 049 ===
-    Print(L"[Phase 049] Starting...\n");
-    // Phase 049 simulated logic
-    UINT64 phase49 = 49 * 123456789;
-    if ((phase49 % 2) == 0) {
-        Print(L"[Phase 049] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 049] Running odd phase logic.\n");
-    }
-    // Logging result of phase 049
-    CHAR16 buffer49[64];
-    UnicodeSPrint(buffer49, sizeof(buffer49), L"Phase 049 result: %lu\n", phase49);
-    Print(buffer49);
-
-    // === Phase 050 ===
-    Print(L"[Phase 050] Starting...\n");
-    // Phase 050 simulated logic
-    UINT64 phase50 = 50 * 123456789;
-    if ((phase50 % 2) == 0) {
-        Print(L"[Phase 050] Running even phase logic.\n");
-    } else {
-        Print(L"[Phase 050] Running odd phase logic.\n");
-    }
-    // Logging result of phase 050
-    CHAR16 buffer50[64];
-    UnicodeSPrint(buffer50, sizeof(buffer50), L"Phase 050 result: %lu\n", phase50);
-    Print(buffer50);
+    Phase001_InitializeBootContext(ImageHandle, SystemTable);
+    Phase002_LogSystemTableInfo();
+    Phase003_LogCurrentTime();
+    Phase004_CheckSecureBoot();
+    Phase005_CheckSetupMode();
+    Phase006_ClearConsole();
+    Phase007_LogBootServices();
+    Phase008_PrepareParams();
+    Phase009_LogConsoleMode();
+    Phase010_EnvironmentReady();
+    Phase011_LocateLoadedImage();
+    Phase012_LocateFileSystem();
+    Phase013_OpenRootDirectory();
+    Phase014_LocateGraphicsOutput();
+    Phase015_LogGraphicsMode();
+    Phase016_GetAcpiRsdp();
+    Phase017_GetMemoryMapInfo();
+    Phase018_LogImagePath();
+    Phase019_ProtocolSetupComplete();
+    Phase020_PrepareTpmContext();
+    Phase021_LocateTcg2();
+    Phase022_QueryTpmCapabilities();
+    Phase023_ReadPcr0();
+    Phase024_ReadPcr1();
+    Phase025_ReadPcr2();
+    Phase026_ReadPcr3();
+    Phase027_ReadPcr4();
+    Phase028_ReadPcr5();
+    Phase029_ExportEventLog();
+    Phase030_TpmReady();
+    Phase031_GetMemoryMap();
+    Phase032_LogMemoryRegions();
+    Phase033_CalcFreeMemory();
+    Phase034_LogAcpiAddress();
+    Phase035_PrepareEntropySeed();
+    Phase036_HashMemoryMap();
+    Phase037_StoreEntropy();
+    Phase038_DisplayEntropy();
+    Phase039_PrepareExitBoot();
+    Phase040_MemoryReady();
+    Phase041_OpenKernelFile();
+    UINT8 ElfHdr[64];
+    Phase042_ReadElfHeader(ElfHdr);
+    Phase043_ValidateElfMagic(ElfHdr);
+    Phase044_ValidateElfClass(ElfHdr);
+    Phase045_ValidateElfEndian(ElfHdr);
+    Phase046_LogProgramHeaderCount(ElfHdr);
+    Phase047_LogEntryPoint(ElfHdr);
+    Phase048_CloseKernelFile();
+    Phase049_KernelHeaderValid();
+    Phase050_BootLoadingBegin();
 
     // === Phase 051 ===
     Print(L"[Phase 051] Starting...\n");

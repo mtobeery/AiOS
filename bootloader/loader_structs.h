@@ -16,4 +16,17 @@ typedef struct {
     UINTN FrameBufferSize;
 } LOADER_PARAMS;
 
+typedef struct {
+    EFI_HANDLE ImageHandle;
+    EFI_SYSTEM_TABLE *SystemTable;
+    EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem;
+    EFI_FILE_HANDLE RootDir;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL *Gop;
+    EFI_TCG2_PROTOCOL *Tcg2;
+    EFI_FILE_HANDLE KernelFile;
+    LOADER_PARAMS Params;
+} BOOT_CONTEXT;
+
+
 #endif // LOADER_STRUCTS_H
