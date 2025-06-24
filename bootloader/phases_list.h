@@ -288,7 +288,7 @@
 {288, L"Phase288_NoOp", Phase288_NoOp},
 {289, L"Phase289_NoOp", Phase289_NoOp},
 {290, L"Phase290_CheckTrustThreshold", Phase290_CheckTrustThreshold},
-{291, L"Phase291_NoOp", Phase291_NoOp},
+{291, L"Phase291_AttemptRecovery", Phase291_AttemptRecovery},
 {292, L"Phase292_NoOp", Phase292_NoOp},
 {293, L"Phase293_NoOp", Phase293_NoOp},
 {294, L"Phase294_NoOp", Phase294_NoOp},

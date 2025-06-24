@@ -20,6 +20,7 @@ typedef struct {
     UINT32 BootTrustScore;
     UINT8 BootUid[16];
     UINT32 FallbackMode;
+    BOOLEAN FallbackUsed;
     EFI_PHYSICAL_ADDRESS LoaderParamsPtr;
 } LOADER_PARAMS;
 
@@ -39,6 +40,21 @@ typedef struct {
 } BOOT_DNA;
 
 typedef struct {
+    BOOLEAN FallbackEnabled;
+    UINT8 BootDelay;
+    BOOLEAN EntropyRequired;
+} BOOT_CONFIG;
+
+typedef enum {
+    ERR_NONE = 0,
+    ERR_TPM_MISSING,
+    ERR_SIG_INVALID,
+    ERR_PCR0_FAIL,
+    ERR_CONFIG_MISSING,
+    ERR_MEM_LEAK,
+} BOOT_ERROR_CODE;
+
+typedef struct {
     EFI_HANDLE ImageHandle;
     EFI_SYSTEM_TABLE *SystemTable;
     EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
@@ -50,6 +66,8 @@ typedef struct {
     LOADER_PARAMS Params;
     TRUST_SCORE Trust;
     BOOT_DNA BootDNA;
+    BOOT_CONFIG Config;
+    BOOT_ERROR_CODE LastError;
     UINT8 TrustThreshold;
 } BOOT_CONTEXT;
 
