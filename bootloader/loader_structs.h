@@ -21,6 +21,10 @@ typedef struct {
     UINT8 BootUid[16];
     UINT32 FallbackMode;
     EFI_PHYSICAL_ADDRESS LoaderParamsPtr;
+    UINT32 FinalBootScore;
+    EFI_PHYSICAL_ADDRESS BootDNAHashRegion;
+    UINT8 BootEntropyScore;
+    UINT8 WatchdogFlags;
 } LOADER_PARAMS;
 
 typedef struct {
