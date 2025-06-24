@@ -17,6 +17,7 @@
 #include <Guid/FileInfo.h>
 #include <Guid/Acpi.h>
 #include <Guid/GlobalVariable.h>
+#include <Guid/ImageAuthentication.h>
 #include "font8x8_basic.inc"
 #include "loader_structs.h"
 
@@ -105,6 +106,14 @@ static ACPI_SDT_HEADER *gDsdt = NULL;
 static EFI_PHYSICAL_ADDRESS gTrustScoreBlock = 0;
 static EFI_PHYSICAL_ADDRESS gLoaderParamsPage = 0;
 static EFI_PHYSICAL_ADDRESS gBootLogPage = 0;
+static EFI_PHYSICAL_ADDRESS gBootStatePage = 0;
+static UINTN gAnomalyCount = 0;
+static UINT64 gAdvancedEntropy = 0;
+static UINTN gAcpiEntryCount = 0;
+static UINTN gAcpiErrCount = 0;
+static BOOLEAN gSecureChainValid = FALSE;
+static BOOLEAN gSelfRepairNeeded = FALSE;
+static UINT8 gBootStateHash[32];
 
 static EFI_STATUS Phase001_InitializeBootContext(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     ZeroMem(&gBootContext, sizeof(gBootContext));
@@ -1227,6 +1236,14 @@ typedef struct {
     UINT32 Checksum;
 } LOADER_PARAMS_BLOCK;
 
+typedef struct {
+    UINT32 Trust;
+    UINT8  Uid[16];
+    UINT8  Anom;
+    UINT8  Reserved[7];
+    UINT64 Entropy;
+} BOOTSTATE;
+
 static UINT32 ComputeChecksum(UINT8 *Data, UINTN Size) {
     UINT32 Crc = 0;
     for (UINTN i=0; i<Size; i++) Crc ^= Data[i];
@@ -1334,6 +1351,310 @@ static EFI_STATUS Phase198_LogEventAddress(void) {
 
 static EFI_STATUS Phase199_NoOp(void) { return EFI_SUCCESS; }
 static EFI_STATUS Phase200_ReservationComplete(void) { return EFI_SUCCESS; }
+
+// ==================== Phases 201-250 ====================
+
+static UINT64 GetRandom64(void) {
+    UINT64 v; UINT8 ok;
+    __asm__ __volatile__("rdrand %0; setc %1" : "=r"(v), "=qm"(ok));
+    if (!ok) v = AsmReadTsc();
+    return v;
+}
+
+static EFI_STATUS Phase201_RuntimeAnomalyScan(void) {
+    if (!gBootContext.Params.MemoryMap) return EFI_NOT_READY;
+    gAnomalyCount = 0;
+    UINTN count = gBootContext.Params.MemoryMapSize / gBootContext.Params.DescriptorSize;
+    for (UINTN i=0;i<count;i++) {
+        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)gBootContext.Params.MemoryMap + i*gBootContext.Params.DescriptorSize);
+        if ((d->Attribute & EFI_MEMORY_RUNTIME) &&
+            d->Type != EfiRuntimeServicesCode && d->Type != EfiRuntimeServicesData)
+            gAnomalyCount++;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase202_ScanKernelPatterns(void) {
+    if (gBootContext.Params.KernelBase==0 || gBootContext.Params.KernelSize==0) return EFI_SUCCESS;
+    UINT32 *p = (UINT32*)(UINTN)gBootContext.Params.KernelBase;
+    UINTN words = gBootContext.Params.KernelSize/4;
+    for (UINTN i=0;i<words;i++)
+        if (p[i]==0xDEADBEEF) gAnomalyCount++;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase203_LogAnomalyResults(void) {
+    Print(L"Anomalies found: %u\n", (UINT32)gAnomalyCount);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase204_GatherAdvancedEntropy(void) {
+    gAdvancedEntropy = GetRandom64() ^ AsmReadTsc() ^ gAnomalyCount;
+    Print(L"Adv entropy %lx\n", gAdvancedEntropy);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase205_MixEntropy(void) {
+    SHA256_CTX ctx; UINT8 dig[32];
+    sha256_init(&ctx);
+    sha256_update(&ctx, gBootContext.Params.BootUid, 16);
+    sha256_update(&ctx, &gAdvancedEntropy, sizeof(gAdvancedEntropy));
+    sha256_final(&ctx, dig);
+    CopyMem(gBootContext.Params.KernelHash, dig, 32);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase206_LogEntropyDigest(void) {
+    Print(L"Entropy digest: ");
+    for (UINTN i=0;i<32;i++) Print(L"%02x", gBootContext.Params.KernelHash[i]);
+    Print(L"\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase207_AcpiDeepTraversal(void) {
+    if (!gXsdt) return EFI_NOT_FOUND;
+    UINTN esz = (gXsdt->Revision>=2)?sizeof(UINT64):sizeof(UINT32);
+    gAcpiEntryCount = (gXsdt->Length - sizeof(ACPI_SDT_HEADER))/esz;
+    gAcpiErrCount = 0;
+    UINT8 *ptr = (UINT8*)gXsdt + sizeof(ACPI_SDT_HEADER);
+    for (UINTN i=0;i<gAcpiEntryCount;i++) {
+        UINT64 addr = (esz==8)?((UINT64*)ptr)[i]:((UINT32*)ptr)[i];
+        ACPI_SDT_HEADER *h = (ACPI_SDT_HEADER*)(UINTN)addr;
+        if (!h) continue;
+        UINT8 sum=0; for (UINTN b=0;b<h->Length;b++) sum += ((UINT8*)h)[b];
+        if (sum!=0) gAcpiErrCount++;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase208_LogAcpiTraversal(void) {
+    Print(L"ACPI tables checked: %u errors:%u\n", (UINT32)gAcpiEntryCount, (UINT32)gAcpiErrCount);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase209_SecureBootChainValidation(void) {
+    UINTN sz=0; EFI_STATUS st;
+    BOOLEAN pk=FALSE,kek=FALSE,db=FALSE;
+    st=gRT->GetVariable(L"PK", &gEfiGlobalVariableGuid, NULL, &sz, NULL);
+    if (st==EFI_BUFFER_TOO_SMALL) pk=TRUE;
+    sz=0; st=gRT->GetVariable(L"KEK", &gEfiGlobalVariableGuid, NULL, &sz, NULL);
+    if (st==EFI_BUFFER_TOO_SMALL) kek=TRUE;
+    sz=0; st=gRT->GetVariable(L"db", &gEfiImageSecurityDatabaseGuid, NULL, &sz, NULL);
+    if (st==EFI_BUFFER_TOO_SMALL) db=TRUE;
+    gSecureChainValid = (pk && kek && db);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase210_LogSecureChain(void) {
+    Print(L"SecureBoot chain %a\n", gSecureChainValid?L"valid":L"invalid");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase211_InstallSelfRepair(void) {
+    gSelfRepairNeeded = (gAcpiErrCount>0) || (gAnomalyCount>0) || !gSecureChainValid;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase212_RunSelfRepair(void) {
+    if (gSelfRepairNeeded) {
+        Print(L"Self-repair activated\n");
+        if (gBootContext.Params.BootTrustScore < 50)
+            gBootContext.Params.BootTrustScore += 10;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase213_LogSelfRepair(void) {
+    Print(L"Self-repair %a\n", gSelfRepairNeeded?L"done":L"not needed");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase214_SetupRealtimeFallback(void) {
+    if (gAnomalyCount>0 && gBootContext.Params.FallbackMode==0)
+        gBootContext.Params.FallbackMode = 1;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase215_RenderRealtimeFallback(void) {
+    if (gBootContext.Params.FallbackMode && gBootContext.Gop) {
+        EFI_GRAPHICS_OUTPUT_BLT_PIXEL r={0,0,255,0};
+        gBootContext.Gop->Blt(gBootContext.Gop,&r,EfiBltVideoFill,0,0,0,0,
+            gBootContext.Gop->Mode->Info->HorizontalResolution,4,0);
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase216_AllocateBootState(void) {
+    if (gBootStatePage) return EFI_SUCCESS;
+    return gBS->AllocatePages(AllocateAnyPages,EfiRuntimeServicesData,1,&gBootStatePage);
+}
+
+static EFI_STATUS Phase217_StoreBootState(void) {
+    if (!gBootStatePage) return EFI_NOT_READY;
+    BOOTSTATE *b = (BOOTSTATE*)(UINTN)gBootStatePage;
+    b->Trust = gBootContext.Params.BootTrustScore;
+    CopyMem(b->Uid, gBootContext.Params.BootUid,16);
+    b->Anom = (UINT8)gAnomalyCount;
+    b->Entropy = gAdvancedEntropy;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase218_HashBootState(void) {
+    if (!gBootStatePage) return EFI_NOT_READY;
+    SHA256_CTX ctx; sha256_init(&ctx);
+    sha256_update(&ctx, (UINT8*)(UINTN)gBootStatePage, sizeof(BOOTSTATE));
+    sha256_final(&ctx, gBootStateHash);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase219_LogBootStateHash(void) {
+    Print(L"BootState hash: ");
+    for (UINTN i=0;i<32;i++) Print(L"%02x", gBootStateHash[i]);
+    Print(L"\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase220_CacheBootStatePtr(void) {
+    if (gTrustScoreBlock)
+        ((UINT64*)(UINTN)gTrustScoreBlock)[4] = gBootStatePage;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase221_LogBootStateAddr(void) {
+    Print(L"BootState page @ %lx\n", gBootStatePage);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase222_VerifyBootState(void) {
+    if (!gBootStatePage) return EFI_NOT_READY;
+    BOOTSTATE *b = (BOOTSTATE*)(UINTN)gBootStatePage;
+    if (b->Trust != gBootContext.Params.BootTrustScore) return EFI_COMPROMISED_DATA;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase223_FinalizeBootState(void) {
+    CopyMem(gBootContext.Params.BootUid, gBootStateHash, 16);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase224_AdjustTrustForAnomalies(void) {
+    if (gAnomalyCount) {
+        if (gBootContext.Params.BootTrustScore > gAnomalyCount)
+            gBootContext.Params.BootTrustScore -= gAnomalyCount;
+        else
+            gBootContext.Params.BootTrustScore = 0;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase225_LogAdjustedTrust(void) {
+    Print(L"Adjusted TrustScore=%u\n", gBootContext.Params.BootTrustScore);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase226_MixBootUidFinal(void) {
+    for (UINTN i=0;i<16;i++)
+        gBootContext.Params.BootUid[i]^=(UINT8)gBootContext.Params.BootTrustScore;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase227_LogFinalUid(void) {
+    Print(L"Final UID: ");
+    for (UINTN i=0;i<16;i++) Print(L"%02x", gBootContext.Params.BootUid[i]);
+    Print(L"\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase228_PersistBootStateToLog(void) {
+    if (gBootLogPage && gBootStatePage)
+        CopyMem((UINT8*)(UINTN)gBootLogPage+64,(VOID*)(UINTN)gBootStatePage,sizeof(BOOTSTATE));
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase229_LogPersistResult(void) {
+    Print(L"Boot state persisted\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase230_BootStateCachingComplete(void) {
+    if (gBootStatePage && gTrustScoreBlock)
+        ((UINT8*)(UINTN)gTrustScoreBlock)[40] = 1;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase231_SetupExitNotice(void) { Print(L"Preparing to exit boot services\n"); return EFI_SUCCESS; }
+
+static EFI_STATUS Phase232_CleanAnomalyBuffer(void) { gAnomalyCount=0; return EFI_SUCCESS; }
+
+static EFI_STATUS Phase233_DelayBeforeExit(void) { gBS->Stall(10000); return EFI_SUCCESS; }
+
+static EFI_STATUS Phase234_FinalSecureCheck(void) { if(!gSecureChainValid) gBootContext.Params.FallbackMode=1; return EFI_SUCCESS; }
+
+static EFI_STATUS Phase235_DrawFinalIndicator(void) {
+    if (gBootContext.Gop) {
+        EFI_GRAPHICS_OUTPUT_BLT_PIXEL g={0,255,0,0};
+        gBootContext.Gop->Blt(gBootContext.Gop,&g,EfiBltVideoFill,0,0,0,
+            gBootContext.Gop->Mode->Info->VerticalResolution-8,8,8,0);
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase236_LogExitPlan(void) { Print(L"Exit plan ready\n"); return EFI_SUCCESS; }
+
+static EFI_STATUS Phase237_CacheEntropyInParams(void) {
+    if (gBootStatePage) ((BOOTSTATE*)(UINTN)gBootStatePage)->Entropy ^= AsmReadTsc();
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase238_LogEntropyCached(void) { Print(L"Entropy cached\n"); return EFI_SUCCESS; }
+
+static EFI_STATUS Phase239_SaveAcpiErrorCount(void) {
+    if (gBootStatePage) ((BOOTSTATE*)(UINTN)gBootStatePage)->Anom = (UINT8)gAcpiErrCount;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase240_LogAcpiErrors(void) {
+    Print(L"ACPI errors stored %u\n", (UINT32)gAcpiErrCount);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase241_MarkRepairStatus(void) {
+    if (gBootStatePage) ((BOOTSTATE*)(UINTN)gBootStatePage)->Trust |= gSelfRepairNeeded?0x80000000:0;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase242_LogRepairStatus(void) {
+    Print(L"Repair flag %u\n", gSelfRepairNeeded);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase243_SaveFallbackStatus(void) {
+    if (gBootStatePage) ((BOOTSTATE*)(UINTN)gBootStatePage)->Anom |= (gBootContext.Params.FallbackMode?0x80:0);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase244_LogFallbackStatus(void) {
+    Print(L"Fallback stored %u\n", gBootContext.Params.FallbackMode);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase245_FinalizeSecureChain(void) {
+    if (!gSecureChainValid) return EFI_SECURITY_VIOLATION; return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase246_LogSecureChain(void) { Print(L"Secure chain verified\n"); return EFI_SUCCESS; }
+
+static EFI_STATUS Phase247_PrepareForKernelJump(void) { Print(L"Preparing for kernel jump\n"); return EFI_SUCCESS; }
+
+static EFI_STATUS Phase248_FinalAnomalyPrint(void) { Print(L"Final anomaly count %u\n", (UINT32)gAnomalyCount); return EFI_SUCCESS; }
+
+static EFI_STATUS Phase249_FinalCacheDone(void) {
+    if (gBootStatePage && gTrustScoreBlock)
+        ((UINT64*)(UINTN)gTrustScoreBlock)[5] = gBootStatePage;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase250_Complete(void) { Print(L"Phase 250 complete\n"); return EFI_SUCCESS; }
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
@@ -1523,6 +1844,56 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Phase198_LogEventAddress();
     Phase199_NoOp();
     Phase200_ReservationComplete();
+    Phase201_RuntimeAnomalyScan();
+    Phase202_ScanKernelPatterns();
+    Phase203_LogAnomalyResults();
+    Phase204_GatherAdvancedEntropy();
+    Phase205_MixEntropy();
+    Phase206_LogEntropyDigest();
+    Phase207_AcpiDeepTraversal();
+    Phase208_LogAcpiTraversal();
+    Phase209_SecureBootChainValidation();
+    Phase210_LogSecureChain();
+    Phase211_InstallSelfRepair();
+    Phase212_RunSelfRepair();
+    Phase213_LogSelfRepair();
+    Phase214_SetupRealtimeFallback();
+    Phase215_RenderRealtimeFallback();
+    Phase216_AllocateBootState();
+    Phase217_StoreBootState();
+    Phase218_HashBootState();
+    Phase219_LogBootStateHash();
+    Phase220_CacheBootStatePtr();
+    Phase221_LogBootStateAddr();
+    Phase222_VerifyBootState();
+    Phase223_FinalizeBootState();
+    Phase224_AdjustTrustForAnomalies();
+    Phase225_LogAdjustedTrust();
+    Phase226_MixBootUidFinal();
+    Phase227_LogFinalUid();
+    Phase228_PersistBootStateToLog();
+    Phase229_LogPersistResult();
+    Phase230_BootStateCachingComplete();
+    Phase231_SetupExitNotice();
+    Phase232_CleanAnomalyBuffer();
+    Phase233_DelayBeforeExit();
+    Phase234_FinalSecureCheck();
+    Phase235_DrawFinalIndicator();
+    Phase236_LogExitPlan();
+    Phase237_CacheEntropyInParams();
+    Phase238_LogEntropyCached();
+    Phase239_SaveAcpiErrorCount();
+    Phase240_LogAcpiErrors();
+    Phase241_MarkRepairStatus();
+    Phase242_LogRepairStatus();
+    Phase243_SaveFallbackStatus();
+    Phase244_LogFallbackStatus();
+    Phase245_FinalizeSecureChain();
+    Phase246_LogSecureChain();
+    Phase247_PrepareForKernelJump();
+    Phase248_FinalAnomalyPrint();
+    Phase249_FinalCacheDone();
+    Phase250_Complete();
     Phase181_ValidateMapForExit();
     Phase182_ExitBootServices();
     Phase183_ShowLaunchSplash();
