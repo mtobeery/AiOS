@@ -1,17 +1,26 @@
-CC=x86_64-elf-gcc
-CFLAGS=-ffreestanding -fpic -fshort-wchar -mno-red-zone -Wall -I../include -I/usr/include/efi -I/usr/include/efi/x86_64
-LDFLAGS=-nostdlib -T /usr/lib/gnuefi/elf_x86_64_efi.lds -shared -Bsymbolic -L/usr/lib -lefi -lgnuefi
 
-OBJS=main.o identity.o sha256.o
+TARGET = AiOSLoader
+ARCH = x86_64
+EFIINC = /usr/include/efi
+EFILIB = /usr/lib
 
-all: BOOTX64.EFI
+CC = x86_64-linux-gnu-gcc
+CFLAGS = -fno-stack-protector -fpic -fshort-wchar -mno-red-zone -Wall -Wextra -O2 \
+    -I$(EFIINC) -I$(EFIINC)/$(ARCH) -I$(EFILIB) -DEFI_FUNCTION_WRAPPER
+LDFLAGS = -nostdlib -znocombreloc -T /usr/lib/elf_$(ARCH)_efi.lds \
+    --defsym=EFI_SUBSYSTEM=0xa --oformat=efi-app-$(ARCH)
 
-BOOTX64.EFI: $(OBJS)
-	$(CC) $(CFLAGS) -o BOOTX64.so $(OBJS) $(LDFLAGS)
-	 objcopy -j .text -j .sdata -j .data -j .dynamic -j .dynsym -j .rel -j .rela -j .reloc -j .eh_frame --target=efi-app-x86_64 BOOTX64.so BOOTX64.EFI
+OBJCOPY = objcopy
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+all: $(TARGET).efi
+
+$(TARGET).efi: main.o
+	ld $(LDFLAGS) -o $(TARGET).efi main.o
+	$(OBJCOPY) -j .text -j .sdata -j .data -j .dynamic -j .dynsym \
+	    -j .rel -j .rela -j .reloc --target=efi-app-$(ARCH) $(TARGET).efi $(TARGET)_final.efi
+
+main.o: main.c loader_structs.h
+	$(CC) $(CFLAGS) -c main.c -o main.o
 
 clean:
-	 rm -f $(OBJS) BOOTX64.so BOOTX64.EFI
+	rm -f *.o *.efi *_final.efi

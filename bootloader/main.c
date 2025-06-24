@@ -114,11 +114,6 @@ static UINTN gAcpiErrCount = 0;
 static BOOLEAN gSecureChainValid = FALSE;
 static BOOLEAN gSelfRepairNeeded = FALSE;
 static UINT8 gBootStateHash[32];
-static EFI_PHYSICAL_ADDRESS gAiInputPage = 0;
-static EFI_PHYSICAL_ADDRESS gBootDNAPage = 0;
-static EFI_PHYSICAL_ADDRESS gBootDNAHashPage = 0;
-static UINT64 gWatchdogStart = 0;
-static const UINT64 gWatchdogTimeout = 500000000ULL;
 
 static EFI_STATUS Phase001_InitializeBootContext(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     ZeroMem(&gBootContext, sizeof(gBootContext));
@@ -1249,14 +1244,6 @@ typedef struct {
     UINT64 Entropy;
 } BOOTSTATE;
 
-typedef struct {
-    UINT8  BootUid[16];
-    UINT8  Pcr0[32];
-    UINT8  KernelHash[32];
-    BOOLEAN SignatureValid;
-    UINT32 FinalBootScore;
-} BOOTDNA;
-
 static UINT32 ComputeChecksum(UINT8 *Data, UINTN Size) {
     UINT32 Crc = 0;
     for (UINTN i=0; i<Size; i++) Crc ^= Data[i];
@@ -1669,130 +1656,6 @@ static EFI_STATUS Phase249_FinalCacheDone(void) {
 
 static EFI_STATUS Phase250_Complete(void) { Print(L"Phase 250 complete\n"); return EFI_SUCCESS; }
 
-// ==================== Phases 251-260 ====================
-
-static EFI_STATUS Phase251_AIWakeInit(void) {
-    if (gAiInputPage) return EFI_SUCCESS;
-    EFI_STATUS s = gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesData, 1, &gAiInputPage);
-    if (!EFI_ERROR(s))
-        SetMem((VOID*)(UINTN)gAiInputPage, EFI_PAGE_SIZE, 0);
-    return s;
-}
-
-static EFI_STATUS Phase252_StoreBootUidInAi(void) {
-    if (gAiInputPage)
-        CopyMem((VOID*)(UINTN)gAiInputPage, gBootContext.Params.BootUid, 16);
-    return EFI_SUCCESS;
-}
-
-static EFI_STATUS Phase253_StoreEntropyInAi(void) {
-    if (!gAiInputPage) return EFI_NOT_READY;
-    UINT64 e = AsmReadTsc();
-    CopyMem((UINT8*)(UINTN)gAiInputPage + 16, &e, sizeof(e));
-    gBootContext.Params.BootEntropyScore = (UINT8)(e & 0xFF);
-    return EFI_SUCCESS;
-}
-
-static EFI_STATUS Phase254_StorePcrHashInAi(void) {
-    if (!gAiInputPage) return EFI_NOT_READY;
-    CopyMem((UINT8*)(UINTN)gAiInputPage + 24, gPcr0Initial, 32);
-    return EFI_SUCCESS;
-}
-
-static EFI_STATUS Phase255_MarkAiRegionMagic(void) {
-    if (!gAiInputPage) return EFI_NOT_READY;
-    CHAR8 Magic[] = "AiOS-AWAKEN";
-    CopyMem((UINT8*)(UINTN)gAiInputPage + 56, Magic, sizeof(Magic)-1);
-    return EFI_SUCCESS;
-}
-
-static EFI_STATUS Phase256_LogAiRegion(void) { Print(L"AI region @ %lx\n", gAiInputPage); return EFI_SUCCESS; }
-static EFI_STATUS Phase257_StoreAiPointer(void) { if(gTrustScoreBlock) ((UINT64*)(UINTN)gTrustScoreBlock)[6]=gAiInputPage; return EFI_SUCCESS; }
-static EFI_STATUS Phase258_PrepareEarlyModel(void) { return EFI_SUCCESS; }
-static EFI_STATUS Phase259_FinalizeAiPrep(void) { return EFI_SUCCESS; }
-static EFI_STATUS Phase260_AIWakeReady(void) { Print(L"AI input ready\n"); return EFI_SUCCESS; }
-
-// ==================== Phases 261-270 ====================
-
-static EFI_STATUS Phase261_FinalTrustScore(void) {
-    UINT32 s = gBootContext.Params.BootTrustScore;
-    if (gBootContext.Params.SignatureValid) s += 20;
-    if (gSecureChainValid) s += 10;
-    if (gBootContext.Params.FallbackMode) s = (s>30)?(s-30):0;
-    if (s > 100) s = 100;
-    gBootContext.Params.FinalBootScore = s;
-    return EFI_SUCCESS;
-}
-
-static EFI_STATUS Phase262_LogFinalScore(void) {
-    Print(L"FinalBootScore=%u\n", gBootContext.Params.FinalBootScore);
-    return EFI_SUCCESS;
-}
-
-static EFI_STATUS Phase263_DrawScoreIndicator(void) {
-    if (!gBootContext.Gop) return EFI_UNSUPPORTED;
-    EFI_GRAPHICS_OUTPUT_BLT_PIXEL R={0,0,255,0};
-    EFI_GRAPHICS_OUTPUT_BLT_PIXEL G={0,255,0,0};
-    EFI_GRAPHICS_OUTPUT_BLT_PIXEL Y={0,255,255,0};
-    EFI_GRAPHICS_OUTPUT_BLT_PIXEL *C = (gBootContext.Params.FinalBootScore>=90)?&G:((gBootContext.Params.FinalBootScore<50)?&R:&Y);
-    UINTN W=gBootContext.Gop->Mode->Info->HorizontalResolution/2;
-    UINTN X=(gBootContext.Gop->Mode->Info->HorizontalResolution-W)/2;
-    UINTN Yp=gBootContext.Gop->Mode->Info->VerticalResolution-60;
-    gBootContext.Gop->Blt(gBootContext.Gop,C,EfiBltVideoFill,0,0,X,Yp,W*gBootContext.Params.FinalBootScore/100,8,0);
-    return EFI_SUCCESS;
-}
-
-static EFI_STATUS Phase264_StoreFinalScore(void) { if(gTrustScoreBlock) ((UINT32*)(UINTN)gTrustScoreBlock)[8]=gBootContext.Params.FinalBootScore; return EFI_SUCCESS; }
-static EFI_STATUS Phase265_CalcEntropyScore(void) { gBootContext.Params.BootEntropyScore^=(UINT8)(AsmReadTsc()&0xFF); return EFI_SUCCESS; }
-static EFI_STATUS Phase266_LogEntropyScore(void) { Print(L"EntropyScore=%u\n", gBootContext.Params.BootEntropyScore); return EFI_SUCCESS; }
-static EFI_STATUS Phase267_StoreEntropyScore(void) { if(gTrustScoreBlock) ((UINT8*)(UINTN)gTrustScoreBlock)[36]=gBootContext.Params.BootEntropyScore; return EFI_SUCCESS; }
-static EFI_STATUS Phase268_AdjustScoreForEntropy(void) { if(gBootContext.Params.BootEntropyScore<16 && gBootContext.Params.FinalBootScore>10) gBootContext.Params.FinalBootScore-=10; return EFI_SUCCESS; }
-static EFI_STATUS Phase269_LogAdjustedFinalScore(void){ Print(L"AdjScore=%u\n", gBootContext.Params.FinalBootScore); return EFI_SUCCESS; }
-static EFI_STATUS Phase270_TrustScoringComplete(void){ return EFI_SUCCESS; }
-
-// ==================== Phases 271-280 ====================
-
-static EFI_STATUS Phase271_EnableWatchdog(void){ gWatchdogStart=AsmReadTsc(); gBootContext.Params.WatchdogFlags=0; return EFI_SUCCESS; }
-static EFI_STATUS Phase272_WatchdogTick(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase273_CheckWatchdog(void){ if(AsmReadTsc()-gWatchdogStart>gWatchdogTimeout) gBootContext.Params.WatchdogFlags|=0x01; return EFI_SUCCESS; }
-static EFI_STATUS Phase274_StoreWatchdogFlags(void){ if(gTrustScoreBlock) ((UINT8*)(UINTN)gTrustScoreBlock)[37]=gBootContext.Params.WatchdogFlags; return EFI_SUCCESS; }
-static EFI_STATUS Phase275_LogWatchdogFlags(void){ Print(L"Watchdog=%u\n", gBootContext.Params.WatchdogFlags); return EFI_SUCCESS; }
-static EFI_STATUS Phase276_StoreFallbackPath(void){ if(gTrustScoreBlock) ((UINT8*)(UINTN)gTrustScoreBlock)[38]=(UINT8)gBootContext.Params.FallbackMode; return EFI_SUCCESS; }
-static EFI_STATUS Phase277_RenderFailOverlay(void){ if(gBootContext.Params.FinalBootScore<50 && gBootContext.Gop){ EFI_GRAPHICS_OUTPUT_BLT_PIXEL R={0,0,255,0}; UINTN h=4; for(UINTN y=0;y<h;y++) gBootContext.Gop->Blt(gBootContext.Gop,&R,EfiBltVideoFill,0,0,0,y,gBootContext.Gop->Mode->Info->HorizontalResolution,1,0);} return EFI_SUCCESS; }
-static EFI_STATUS Phase278_WatchdogSyncComplete(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase279_NoOp2(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase280_WatchdogReady(void){ return EFI_SUCCESS; }
-
-// ==================== Phases 281-290 ====================
-
-static EFI_STATUS Phase281_CreateBootDNA(void){ if(gBootDNAPage) return EFI_SUCCESS; return gBS->AllocatePages(AllocateAnyPages,EfiRuntimeServicesData,1,&gBootDNAPage); }
-
-static EFI_STATUS Phase282_PopulateBootDNA(void){ if(!gBootDNAPage) return EFI_NOT_READY; BOOTDNA *d=(BOOTDNA*)(UINTN)gBootDNAPage; CopyMem(d->BootUid,gBootContext.Params.BootUid,16); CopyMem(d->Pcr0,gPcr0Initial,32); CopyMem(d->KernelHash,gBootContext.Params.KernelHash,32); d->SignatureValid=gBootContext.Params.SignatureValid; d->FinalBootScore=gBootContext.Params.FinalBootScore; return EFI_SUCCESS; }
-
-static EFI_STATUS Phase283_HashBootDNA(void){ if(!gBootDNAPage) return EFI_NOT_READY; if(!gBootDNAHashPage){ EFI_STATUS st=gBS->AllocatePages(AllocateAnyPages,EfiRuntimeServicesData,1,&gBootDNAHashPage); if(EFI_ERROR(st)) return st; } SHA256_CTX ctx; UINT8 dig[32]; sha256_init(&ctx); sha256_update(&ctx,(UINT8*)(UINTN)gBootDNAPage,sizeof(BOOTDNA)); sha256_final(&ctx,dig); CopyMem((VOID*)(UINTN)gBootDNAHashPage,dig,32); gBootContext.Params.BootDNAHashRegion=gBootDNAHashPage; return EFI_SUCCESS; }
-
-static EFI_STATUS Phase284_TagBootDNABlock(void){ if(!gBootDNAPage) return EFI_NOT_READY; CHAR8 tag[]="BOOTDNA1"; CopyMem((UINT8*)(UINTN)gBootDNAPage+sizeof(BOOTDNA),tag,sizeof(tag)-1); return EFI_SUCCESS; }
-
-static EFI_STATUS Phase285_LogBootDNAHash(void){ Print(L"BootDNA hash page @ %lx\n", gBootDNAHashPage); return EFI_SUCCESS; }
-static EFI_STATUS Phase286_CacheDNAPtr(void){ if(gTrustScoreBlock) ((UINT64*)(UINTN)gTrustScoreBlock)[7]=gBootDNAPage; return EFI_SUCCESS; }
-static EFI_STATUS Phase287_FinalizeBootDNA(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase288_BootDNAReady(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase289_BootDNASigningDone(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase290_BootDNAPrepared(void){ return EFI_SUCCESS; }
-
-// ==================== Phases 291-300 ====================
-
-static EFI_STATUS Phase291_DrawAiEye(void){ if(gBootContext.Gop){ EFI_GRAPHICS_OUTPUT_BLT_PIXEL w={255,255,255,0}; UINTN cx=gBootContext.Gop->Mode->Info->HorizontalResolution/2; UINTN cy=40; for(int i=0;i<20;i++){ gBootContext.Gop->Blt(gBootContext.Gop,&w,EfiBltVideoFill,0,0,cx-i,cy,1,1,0); gBootContext.Gop->Blt(gBootContext.Gop,&w,EfiBltVideoFill,0,0,cx+i,cy,1,1,0); } } return EFI_SUCCESS; }
-static EFI_STATUS Phase292_PlayAnimation(void){ if(gBootContext.Gop) for(int i=0;i<3;i++){ gBS->Stall(30000); } return EFI_SUCCESS; }
-static EFI_STATUS Phase293_ShowScoreOverlay(void){ Print(L"Score Overlay: %u\n", gBootContext.Params.FinalBootScore); return EFI_SUCCESS; }
-static EFI_STATUS Phase294_PrintAwakenComplete(void){ Print(L"Awakening Complete — Conscious Handoff to Kernel\n"); return EFI_SUCCESS; }
-static EFI_STATUS Phase295_NoOp(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase296_NoOp(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase297_NoOp(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase298_NoOp(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase299_NoOp(void){ return EFI_SUCCESS; }
-static EFI_STATUS Phase300_ConsciousJumpToKernel(void){ if(gLoaderParamsPage==0) return EFI_NOT_READY; void (*Entry)(LOADER_PARAMS_BLOCK*)=(void(*)(LOADER_PARAMS_BLOCK*))(UINTN)gBootContext.Params.KernelEntry; Entry((LOADER_PARAMS_BLOCK*)(UINTN)gLoaderParamsPage); return EFI_SUCCESS; }
-
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
     Print(L"AiOS Bootloader Initializing...\n");
@@ -2041,56 +1904,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Phase188_NoOp();
     Phase189_NoOp();
     Phase190_HandoffPrepDone();
-    Phase251_AIWakeInit();
-    Phase252_StoreBootUidInAi();
-    Phase253_StoreEntropyInAi();
-    Phase254_StorePcrHashInAi();
-    Phase255_MarkAiRegionMagic();
-    Phase256_LogAiRegion();
-    Phase257_StoreAiPointer();
-    Phase258_PrepareEarlyModel();
-    Phase259_FinalizeAiPrep();
-    Phase260_AIWakeReady();
-    Phase261_FinalTrustScore();
-    Phase262_LogFinalScore();
-    Phase263_DrawScoreIndicator();
-    Phase264_StoreFinalScore();
-    Phase265_CalcEntropyScore();
-    Phase266_LogEntropyScore();
-    Phase267_StoreEntropyScore();
-    Phase268_AdjustScoreForEntropy();
-    Phase269_LogAdjustedFinalScore();
-    Phase270_TrustScoringComplete();
-    Phase271_EnableWatchdog();
-    Phase272_WatchdogTick();
-    Phase273_CheckWatchdog();
-    Phase274_StoreWatchdogFlags();
-    Phase275_LogWatchdogFlags();
-    Phase276_StoreFallbackPath();
-    Phase277_RenderFailOverlay();
-    Phase278_WatchdogSyncComplete();
-    Phase279_NoOp2();
-    Phase280_WatchdogReady();
-    Phase281_CreateBootDNA();
-    Phase282_PopulateBootDNA();
-    Phase283_HashBootDNA();
-    Phase284_TagBootDNABlock();
-    Phase285_LogBootDNAHash();
-    Phase286_CacheDNAPtr();
-    Phase287_FinalizeBootDNA();
-    Phase288_BootDNAReady();
-    Phase289_BootDNASigningDone();
-    Phase290_BootDNAPrepared();
-    Phase291_DrawAiEye();
-    Phase292_PlayAnimation();
-    Phase293_ShowScoreOverlay();
-    Phase294_PrintAwakenComplete();
-    Phase295_NoOp();
-    Phase296_NoOp();
-    Phase297_NoOp();
-    Phase298_NoOp();
-    Phase299_NoOp();
-    Phase300_ConsciousJumpToKernel();
+    Phase191_JumpToKernel();
     Phase192_NoOp();
     Phase193_NoOp();
     Phase194_NoOp();
