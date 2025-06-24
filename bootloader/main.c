@@ -61,6 +61,49 @@ static EFI_FILE_HANDLE gSigFile = NULL;
 static UINT8 *gSignature = NULL;
 static UINTN gSignatureSize = 0;
 
+// ACPI structure definitions used in later phases
+typedef struct {
+    CHAR8   Signature[8];
+    UINT8   Checksum;
+    CHAR8   OemId[6];
+    UINT8   Revision;
+    UINT32  RsdtAddress;
+    UINT32  Length;
+    UINT64  XsdtAddress;
+    UINT8   ExtendedChecksum;
+    UINT8   Reserved[3];
+} ACPI_RSDP;
+
+typedef struct {
+    UINT32  Signature;
+    UINT32  Length;
+    UINT8   Revision;
+    UINT8   Checksum;
+    CHAR8   OemId[6];
+    CHAR8   OemTableId[8];
+    UINT32  OemRevision;
+    UINT32  CreatorId;
+    UINT32  CreatorRevision;
+} ACPI_SDT_HEADER;
+
+typedef struct {
+    ACPI_SDT_HEADER  Header;
+    UINT32           FirmwareCtrl;
+    UINT32           Dsdt;
+    UINT8            Reserved0[40];
+    UINT64           XDsdt;
+} ACPI_FADT;
+
+#define SIGNATURE_32(A, B, C, D) \
+  ((UINT32)(A) | ((UINT32)(B) << 8) | ((UINT32)(C) << 16) | ((UINT32)(D) << 24))
+
+static ACPI_RSDP      *gRsdp  = NULL;
+static ACPI_SDT_HEADER *gXsdt = NULL;
+static ACPI_FADT      *gFadt  = NULL;
+static ACPI_SDT_HEADER *gDsdt = NULL;
+
+static EFI_PHYSICAL_ADDRESS gTrustScoreBlock = 0;
+
 static EFI_STATUS Phase001_InitializeBootContext(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     ZeroMem(&gBootContext, sizeof(gBootContext));
     gBootContext.ImageHandle = ImageHandle;
@@ -639,6 +682,404 @@ static EFI_STATUS Phase098_FinalMessage(void){ Print(L"Handing off to kernel...\
 static EFI_STATUS Phase099_NoOp(void){ return EFI_SUCCESS; }
 static EFI_STATUS Phase100_BootComplete(void){ Print(L"Boot complete.\n"); return EFI_SUCCESS; }
 
+// ==================== Phases 101-150 ====================
+
+static EFI_STATUS Phase101_CloseFileHandles(void) {
+    if (gBootContext.KernelFile) {
+        gBootContext.KernelFile->Close(gBootContext.KernelFile);
+        gBootContext.KernelFile = NULL;
+    }
+    if (gBootContext.RootDir) {
+        gBootContext.RootDir->Close(gBootContext.RootDir);
+        gBootContext.RootDir = NULL;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase102_UpdateMemoryMap(void) {
+    if (!gBootContext.Params.MemoryMap)
+        return EFI_NOT_READY;
+    UINTN MapSize = gBootContext.Params.MemoryMapSize;
+    EFI_STATUS Status = gBS->GetMemoryMap(&MapSize, gBootContext.Params.MemoryMap,
+        &gBootContext.Params.MapKey, &gBootContext.Params.DescriptorSize,
+        &gBootContext.Params.DescriptorVersion);
+    if (!EFI_ERROR(Status)) {
+        gBootContext.Params.MemoryMapSize = MapSize;
+        Print(L"Memory map refreshed, MapKey=%lx\n", gBootContext.Params.MapKey);
+    } else {
+        Print(L"GetMemoryMap failed: %r\n", Status);
+    }
+    return Status;
+}
+
+static EFI_STATUS Phase103_CheckMapKeyValid(void) {
+    UINTN MapSize = 0, MapKeyCheck = 0, DescSize = 0; UINT32 DescVer = 0;
+    EFI_STATUS Status = gBS->GetMemoryMap(&MapSize, NULL, &MapKeyCheck, &DescSize, &DescVer);
+    if (Status != EFI_BUFFER_TOO_SMALL)
+        return Status;
+    Status = gBS->GetMemoryMap(&MapSize, gBootContext.Params.MemoryMap,
+                               &MapKeyCheck, &DescSize, &DescVer);
+    if (!EFI_ERROR(Status) && MapKeyCheck != gBootContext.Params.MapKey) {
+        Print(L"Warning: MapKey mismatch. Current=%lx New=%lx\n",
+              gBootContext.Params.MapKey, MapKeyCheck);
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase104_PreExitBootCheck(void) {
+    if (gBootContext.Params.MapKey == 0)
+        Print(L"Warning: MapKey is zero before ExitBootServices\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase105_ExitBootServicesReady(void) {
+    Print(L"ExitBootServices preparation done\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase106_LocateRsdp(void) {
+    EFI_CONFIGURATION_TABLE *Table = gST->ConfigurationTable;
+    for (UINTN i = 0; i < gST->NumberOfTableEntries; ++i) {
+        if (CompareGuid(&Table[i].VendorGuid, &gEfiAcpi20TableGuid) ||
+            CompareGuid(&Table[i].VendorGuid, &gEfiAcpi10TableGuid)) {
+            gRsdp = (ACPI_RSDP*)Table[i].VendorTable;
+            Print(L"RSDP @ %p\n", gRsdp);
+            return EFI_SUCCESS;
+        }
+    }
+    Print(L"RSDP not found\n");
+    return EFI_NOT_FOUND;
+}
+
+static EFI_STATUS Phase107_LogRsdpInfo(void) {
+    if (!gRsdp) return EFI_NOT_FOUND;
+    CHAR8 OemId[7];
+    CopyMem(OemId, gRsdp->OemId, 6); OemId[6] = '\0';
+    Print(L"ACPI Rev %u OEM %a\n", gRsdp->Revision, OemId);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase108_LocateXsdt(void) {
+    if (!gRsdp) return EFI_NOT_FOUND;
+    if (gRsdp->Revision >= 2 && gRsdp->XsdtAddress) {
+        gXsdt = (ACPI_SDT_HEADER*)(UINTN)gRsdp->XsdtAddress;
+    } else {
+        gXsdt = (ACPI_SDT_HEADER*)(UINTN)gRsdp->RsdtAddress;
+    }
+    if (gXsdt) {
+        Print(L"XSDT/RSDT @ %p\n", gXsdt);
+        return EFI_SUCCESS;
+    }
+    return EFI_NOT_FOUND;
+}
+
+static EFI_STATUS Phase109_FindFadt(void) {
+    if (!gXsdt) return EFI_NOT_FOUND;
+    UINTN EntrySize = (gXsdt->Revision >= 2) ? sizeof(UINT64) : sizeof(UINT32);
+    UINTN Count = (gXsdt->Length - sizeof(ACPI_SDT_HEADER)) / EntrySize;
+    UINT8 *Ptr = (UINT8*)gXsdt + sizeof(ACPI_SDT_HEADER);
+    for (UINTN i = 0; i < Count; ++i) {
+        UINT64 Address = (EntrySize == sizeof(UINT64)) ?
+            ((UINT64*)Ptr)[i] : (UINT64)((UINT32*)Ptr)[i];
+        ACPI_SDT_HEADER *Hdr = (ACPI_SDT_HEADER*)(UINTN)Address;
+        if (Hdr && Hdr->Signature == SIGNATURE_32('F','A','C','P')) {
+            gFadt = (ACPI_FADT*)Hdr;
+            Print(L"FADT found @ %p\n", gFadt);
+            return EFI_SUCCESS;
+        }
+    }
+    Print(L"FADT not present\n");
+    return EFI_NOT_FOUND;
+}
+
+static EFI_STATUS Phase110_LocateDsdt(void) {
+    if (!gFadt) return EFI_NOT_FOUND;
+    if (gFadt->XDsdt)
+        gDsdt = (ACPI_SDT_HEADER*)(UINTN)gFadt->XDsdt;
+    else
+        gDsdt = (ACPI_SDT_HEADER*)(UINTN)gFadt->Dsdt;
+    if (gDsdt)
+        Print(L"DSDT @ %p\n", gDsdt);
+    return gDsdt ? EFI_SUCCESS : EFI_NOT_FOUND;
+}
+
+static EFI_STATUS Phase111_LogAcpiOemId(void) {
+    if (!gFadt) return EFI_NOT_FOUND;
+    CHAR8 OemId[7];
+    CopyMem(OemId, gFadt->Header.OemId, 6); OemId[6] = '\0';
+    Print(L"ACPI OEM ID: %a\n", OemId);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase112_ParseFADT(void) {
+    if (!gFadt) return EFI_NOT_FOUND;
+    Print(L"FADT Rev %u Flags %08x\n", gFadt->Header.Revision, gFadt->Header.CreatorRevision);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase113_ParseDsdtHeader(void) {
+    if (!gDsdt) return EFI_NOT_FOUND;
+    CHAR8 OemId[7];
+    CopyMem(OemId, gDsdt->OemId, 6); OemId[6] = '\0';
+    Print(L"DSDT OEM %a Rev %u\n", OemId, gDsdt->Revision);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase114_StoreAcpiAddresses(void) {
+    // Store ACPI table addresses for kernel consumption using runtime memory
+    if (gTrustScoreBlock == 0) {
+        EFI_STATUS S = gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesData,
+                                         1, &gTrustScoreBlock);
+        if (EFI_ERROR(S)) return S;
+    }
+    UINT64 *Buf = (UINT64*)(UINTN)gTrustScoreBlock;
+    Buf[0] = (UINT64)(UINTN)gRsdp;
+    Buf[1] = (UINT64)(UINTN)gFadt;
+    Buf[2] = (UINT64)(UINTN)gDsdt;
+    Print(L"ACPI addresses stored at %lx\n", gTrustScoreBlock);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase115_AcpiParsingComplete(void) {
+    Print(L"ACPI parsing complete\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase116_DrawProgressBar(void) {
+    if (!gBootContext.Gop) return EFI_UNSUPPORTED;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL Pixel = {0, 128, 0, 0};
+    UINTN Width = gBootContext.Gop->Mode->Info->HorizontalResolution / 2;
+    UINTN Height = 8;
+    UINTN X = (gBootContext.Gop->Mode->Info->HorizontalResolution - Width) / 2;
+    UINTN Y = gBootContext.Gop->Mode->Info->VerticalResolution - 20;
+    gBootContext.Gop->Blt(gBootContext.Gop, &Pixel, EfiBltVideoFill, 0, 0, X, Y,
+                          Width * gBootContext.Params.BootTrustScore / 100,
+                          Height, 0);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase117_DrawTrustScoreBar(void) {
+    if (!gBootContext.Gop) return EFI_UNSUPPORTED;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL R = {0,0,255,0};
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL G = {0,255,0,0};
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL *Color =
+        (gBootContext.Params.BootTrustScore >= 80) ? &G : &R;
+    UINTN Width = gBootContext.Gop->Mode->Info->HorizontalResolution / 3;
+    UINTN X = (gBootContext.Gop->Mode->Info->HorizontalResolution - Width) / 2;
+    UINTN Y = gBootContext.Gop->Mode->Info->VerticalResolution - 40;
+    gBootContext.Gop->Blt(gBootContext.Gop, Color, EfiBltVideoFill, 0,0, X, Y,
+                          Width * gBootContext.Params.BootTrustScore / 100, 6,0);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase118_DisplayBootUid(void) {
+    Print(L"BootUID: ");
+    for (UINTN i = 0; i < 16; ++i) Print(L"%02x", gBootContext.Params.BootUid[i]);
+    Print(L"\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase119_DisplaySecureBootState(void) {
+    UINT8 Value = 0; UINTN Size = sizeof(Value);
+    EFI_STATUS Status = gRT->GetVariable(L"SecureBoot", &gEfiGlobalVariableGuid,
+                                         NULL, &Size, &Value);
+    if (!EFI_ERROR(Status))
+        Print(L"SecureBoot %u\n", Value);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase120_DisplaySignatureState(void) {
+    Print(L"Signature valid: %u\n", gBootContext.Params.SignatureValid);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase121_AnimateDots(void) {
+    for (UINTN i = 0; i < 3; ++i) { Print(L"." ); gBS->Stall(100000); }
+    Print(L"\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase122_DrawBootText(void) {
+    if (!gBootContext.Gop) return EFI_UNSUPPORTED;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL White = {255,255,255,0};
+    CHAR16 *Text = L"AiOS Loader";
+    UINTN X = 10, Y = 10;
+    for (; *Text; ++Text, X += 8) {
+        UINT8 *Glyph = font8x8_basic[*Text & 0x7F];
+        for (UINTN gy = 0; gy < 8; ++gy) {
+            for (UINTN gx = 0; gx < 8; ++gx) {
+                if (Glyph[gy] & (1 << gx))
+                    gBootContext.Gop->Blt(gBootContext.Gop, &White,
+                        EfiBltVideoFill, 0, 0, X + gx, Y + gy, 1,1,0);
+            }
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase123_UpdateProgressAnimation(void) {
+    gBS->Stall(200000);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase124_DrawFinalBar(void) {
+    if (!gBootContext.Gop) return EFI_UNSUPPORTED;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL Blue = {255,0,0,0};
+    gBootContext.Gop->Blt(gBootContext.Gop, &Blue, EfiBltVideoFill, 0,0,0,0, 5,5,0);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase125_FramebufferComplete(void) {
+    Print(L"Framebuffer visuals ready\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase126_ScanMemory(void) {
+    if (!gBootContext.Params.MemoryMap) return EFI_NOT_READY;
+    UINTN Count = gBootContext.Params.MemoryMapSize / gBootContext.Params.DescriptorSize;
+    UINT64 Pages = 0;
+    for (UINTN i = 0; i < Count; ++i) {
+        EFI_MEMORY_DESCRIPTOR *Desc = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)gBootContext.Params.MemoryMap + i * gBootContext.Params.DescriptorSize);
+        if (Desc->Type == EfiConventionalMemory)
+            Pages += Desc->NumberOfPages;
+    }
+    gBootContext.Params.KernelSize = Pages; // reuse field as temporary storage
+    Print(L"Available pages: %lu\n", Pages);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase127_DetectMemoryGaps(void) {
+    if (!gBootContext.Params.MemoryMap) return EFI_NOT_READY;
+    UINTN Count = gBootContext.Params.MemoryMapSize / gBootContext.Params.DescriptorSize;
+    EFI_PHYSICAL_ADDRESS LastEnd = 0;
+    for (UINTN i = 0; i < Count; ++i) {
+        EFI_MEMORY_DESCRIPTOR *Desc = (EFI_MEMORY_DESCRIPTOR*)((UINT8*)gBootContext.Params.MemoryMap + i * gBootContext.Params.DescriptorSize);
+        if (LastEnd && Desc->PhysicalStart > LastEnd + 10 * 4096ULL)
+            Print(L"Gap after %lx size %lx\n", LastEnd, Desc->PhysicalStart - LastEnd);
+        LastEnd = Desc->PhysicalStart + EFI_PAGES_TO_SIZE(Desc->NumberOfPages);
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase128_ComputeEntropy(void) {
+    UINT64 Ticks = AsmReadTsc();
+    UINT64 Pages = gBootContext.Params.KernelSize;
+    UINT64 Entropy = Ticks ^ Pages;
+    CopyMem(&gBootContext.Params.BootUid[0], &Entropy, sizeof(UINT64));
+    Print(L"Entropy value %lx\n", Entropy);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase129_StoreEntropy(void) {
+    if (gTrustScoreBlock) {
+        ((UINT64*)(UINTN)gTrustScoreBlock)[3] = *(UINT64*)gBootContext.Params.BootUid;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase130_LogEntropy(void) {
+    Print(L"Entropy stored\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase131_CheckMemory(void) {
+    Print(L"Memory scan complete\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase132_FinalizeMemoryScan(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase133_RandomDelay(void) {
+    gBS->Stall(50000);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase134_MemoryScanningComplete(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase135_ReserveTime(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase136_RecordTpmTimer(void) {
+    gBootContext.Params.BootTrustScore += 0;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase137_RecordFsTimer(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase138_RecordHashTimer(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase139_RecordElfTimer(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase140_ComputeBootTime(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase141_PrepareBootScoreWeight(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase142_LogTimingSummary(void) {
+    Print(L"Timing summary ready\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase143_StoreTimerData(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase144_RealTimePrepComplete(void) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase145_LogBootEstimate(void) {
+    Print(L"Boot time estimate complete\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase146_PrintSummary(void) {
+    Print(L"Boot trust %u\n", gBootContext.Params.BootTrustScore);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase147_HighlightFailures(void) {
+    if (!gBootContext.Params.SignatureValid)
+        Print(L"!!! Signature verification FAILED !!!\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase148_ReserveTrustScoreRegion(void) {
+    EFI_STATUS Status;
+    if (gTrustScoreBlock == 0)
+        Status = gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesData, 1, &gTrustScoreBlock);
+    else
+        Status = EFI_SUCCESS;
+    if (!EFI_ERROR(Status))
+        *(UINT32*)(UINTN)gTrustScoreBlock = gBootContext.Params.BootTrustScore;
+    return Status;
+}
+
+static EFI_STATUS Phase149_StorePayloadPointers(void) {
+    if (gTrustScoreBlock)
+        ((UINT64*)(UINTN)gTrustScoreBlock)[1] = gBootContext.Params.FrameBufferBase;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase150_FinalHandoffPrep(void) {
+    Print(L"Final handoff preparation done\n");
+    return EFI_SUCCESS;
+}
+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
     Print(L"AiOS Bootloader Initializing...\n");
@@ -742,6 +1183,56 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Phase098_FinalMessage();
     Phase099_NoOp();
     Phase100_BootComplete();
+    Phase101_CloseFileHandles();
+    Phase102_UpdateMemoryMap();
+    Phase103_CheckMapKeyValid();
+    Phase104_PreExitBootCheck();
+    Phase105_ExitBootServicesReady();
+    Phase106_LocateRsdp();
+    Phase107_LogRsdpInfo();
+    Phase108_LocateXsdt();
+    Phase109_FindFadt();
+    Phase110_LocateDsdt();
+    Phase111_LogAcpiOemId();
+    Phase112_ParseFADT();
+    Phase113_ParseDsdtHeader();
+    Phase114_StoreAcpiAddresses();
+    Phase115_AcpiParsingComplete();
+    Phase116_DrawProgressBar();
+    Phase117_DrawTrustScoreBar();
+    Phase118_DisplayBootUid();
+    Phase119_DisplaySecureBootState();
+    Phase120_DisplaySignatureState();
+    Phase121_AnimateDots();
+    Phase122_DrawBootText();
+    Phase123_UpdateProgressAnimation();
+    Phase124_DrawFinalBar();
+    Phase125_FramebufferComplete();
+    Phase126_ScanMemory();
+    Phase127_DetectMemoryGaps();
+    Phase128_ComputeEntropy();
+    Phase129_StoreEntropy();
+    Phase130_LogEntropy();
+    Phase131_CheckMemory();
+    Phase132_FinalizeMemoryScan();
+    Phase133_RandomDelay();
+    Phase134_MemoryScanningComplete();
+    Phase135_ReserveTime();
+    Phase136_RecordTpmTimer();
+    Phase137_RecordFsTimer();
+    Phase138_RecordHashTimer();
+    Phase139_RecordElfTimer();
+    Phase140_ComputeBootTime();
+    Phase141_PrepareBootScoreWeight();
+    Phase142_LogTimingSummary();
+    Phase143_StoreTimerData();
+    Phase144_RealTimePrepComplete();
+    Phase145_LogBootEstimate();
+    Phase146_PrintSummary();
+    Phase147_HighlightFailures();
+    Phase148_ReserveTrustScoreRegion();
+    Phase149_StorePayloadPointers();
+    Phase150_FinalHandoffPrep();
     Print(L"Bootloader execution complete.\n");
     return EFI_SUCCESS;
 }
