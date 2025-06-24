@@ -14,6 +14,11 @@ typedef struct {
     EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *GopModeInfo;
     EFI_PHYSICAL_ADDRESS FrameBufferBase;
     UINTN FrameBufferSize;
+    UINTN KernelSize;
+    UINT8 KernelHash[32];
+    BOOLEAN SignatureValid;
+    UINT32 BootTrustScore;
+    UINT8 BootUid[16];
 } LOADER_PARAMS;
 
 typedef struct {
