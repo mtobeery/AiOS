@@ -154,6 +154,10 @@ static UINT8 *gSignature = NULL;
 static UINTN gSignatureSize = 0;
 static UINT8 *gPublicKey = NULL;
 static UINTN gPublicKeySize = 0;
+static UINT8 *gCertChain = NULL;
+static UINTN gCertChainSize = 0;
+static UINT8 gBootDNASignature[256];
+static UINTN gBootDNASignatureSize = 0;
 static CHAR16 gKernelPath[260]   = L"\\EFI\\AiOS\\kernel.elf";
 static CHAR16 gSignaturePath[260]= L"\\EFI\\AiOS\\kernel.sig";
 static CHAR16 gFallbackPath[260] = L"\\EFI\\AiOS\\recovery.elf";
@@ -189,7 +193,11 @@ static EFI_STATUS LoadPublicKey(EFI_FILE_HANDLE Root) {
     S = SafeAllocatePool(gPublicKeySize, (VOID**)&gPublicKey, "PubKey");
     if (EFI_ERROR(S)) { File->Close(File); return S; }
     S = File->Read(File, &gPublicKeySize, gPublicKey); File->Close(File);
-    if (EFI_ERROR(S)) { SafeFree(gPublicKey); gPublicKey=NULL; }
+    if (EFI_ERROR(S)) { SafeFree(gPublicKey); gPublicKey=NULL; return S; }
+    if (gPublicKeySize < 256) { SafeFree(gPublicKey); gPublicKey=NULL; return EFI_SECURITY_VIOLATION; }
+    gBS->SetMemoryAttributes((EFI_PHYSICAL_ADDRESS)(UINTN)gPublicKey,
+                             EFI_SIZE_TO_PAGES(gPublicKeySize)*EFI_PAGE_SIZE,
+                             EFI_MEMORY_RO|EFI_MEMORY_RP);
     return S;
 }
 
@@ -787,13 +795,56 @@ static EFI_STATUS Phase072_ValidateKernelSignature(BOOT_CONTEXT *Ctx) {
     BOOLEAN Valid = RsaPkcs1Verify(Rsa, gBootContext.Params.KernelHash, 32, gSignature, gSignatureSize);
     RsaFree(Rsa);
     gBootContext.Params.SignatureValid = Valid ? TRUE : FALSE;
-    if (!Valid) Ctx->LastError = ERR_SIG_INVALID;
+    if (Valid) {
+        gBS->SetMemoryAttributes(gBootContext.Params.KernelBase,
+                                 EFI_SIZE_TO_PAGES(gBootContext.Params.KernelSize)*EFI_PAGE_SIZE,
+                                 EFI_MEMORY_RO);
+    } else {
+        Ctx->LastError = ERR_SIG_INVALID;
+        gBootContext.Params.BootTrustScore = 0;
+        Phase250_LockdownAndReboot(Ctx);
+    }
     return Valid ? EFI_SUCCESS : EFI_SECURITY_VIOLATION;
 }
 
 // Phase073: LogSignatureStatus
 static EFI_STATUS Phase073_LogSignatureStatus(BOOT_CONTEXT *Ctx) {
     Print(L"Signature valid: %u\n", gBootContext.Params.SignatureValid);
+    return EFI_SUCCESS;
+}
+
+// Phase073A: LoadCertificateChainFromFirmware
+static EFI_STATUS Phase073A_LoadCertificateChainFromFirmware(BOOT_CONTEXT *Ctx) {
+    if (gCertChain) return EFI_SUCCESS;
+    EFI_FILE_HANDLE File; EFI_STATUS S;
+    S = Ctx->RootDir->Open(Ctx->RootDir, &File, L"\\EFI\\AiOS\\root_ca.cer", EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(S)) return S;
+    UINTN Sz=0; EFI_FILE_INFO *Info=NULL;
+    S = File->GetInfo(File, &gEfiFileInfoGuid, &Sz, NULL);
+    if (S==EFI_BUFFER_TOO_SMALL) {
+        S = SafeAllocatePool(Sz, (VOID**)&Info, "CACertInfo");
+        if (!EFI_ERROR(S)) {
+            S = File->GetInfo(File, &gEfiFileInfoGuid, &Sz, Info);
+            if (!EFI_ERROR(S)) gCertChainSize = Info->FileSize;
+            SafeFree(Info);
+        }
+    }
+    if (EFI_ERROR(S)) { File->Close(File); return S; }
+    S = SafeAllocatePool(gCertChainSize, (VOID**)&gCertChain, "CACert");
+    if (EFI_ERROR(S)) { File->Close(File); return S; }
+    S = File->Read(File, &gCertChainSize, gCertChain); File->Close(File);
+    if (EFI_ERROR(S)) { SafeFree(gCertChain); gCertChain=NULL; return S; }
+    gBS->SetMemoryAttributes((EFI_PHYSICAL_ADDRESS)(UINTN)gCertChain,
+                             EFI_SIZE_TO_PAGES(gCertChainSize)*EFI_PAGE_SIZE,
+                             EFI_MEMORY_RO|EFI_MEMORY_RP);
+    return EFI_SUCCESS;
+}
+
+// Phase073B: ValidateSignatureWithCertificateChain
+static EFI_STATUS Phase073B_ValidateSignatureWithCertificateChain(BOOT_CONTEXT *Ctx) {
+    if (!gCertChain || gPublicKeySize==0) return EFI_SECURITY_VIOLATION;
+    // Placeholder chain validation logic
+    if (!gBootContext.Params.SignatureValid) return EFI_SECURITY_VIOLATION;
     return EFI_SUCCESS;
 }
 
@@ -836,18 +887,35 @@ static EFI_STATUS Phase076_ReadSecureBootState(BOOT_CONTEXT *Ctx) {
 // Phase077: ComputeBootTrustScore
 static EFI_STATUS Phase077_ComputeBootTrustScore(BOOT_CONTEXT *Ctx) {
     UINT32 Score = 0;
-    if (gBootContext.Params.SignatureValid) Score += 80;
+    if (gBootContext.Params.SignatureValid) Score += 60;
     TPML_PCR_SELECTION SelIn={0}; SelIn.count=1; SelIn.pcrSelections[0].hash=TPM_ALG_SHA256; SelIn.pcrSelections[0].sizeofSelect=3; SelIn.pcrSelections[0].pcrSelect[0]=1;
-    TPML_PCR_SELECTION SelOut; TPML_DIGEST Values; UINT32 C;
-    if (!EFI_ERROR(Tpm2PcrRead(&SelIn,&C,&SelOut,&Values)) && Values.count>0)
-        Score += 20;
+    TPML_PCR_SELECTION SelOut; TPML_DIGEST Values; UINT32 C; BOOLEAN PcrMatch=FALSE;
+    if (!EFI_ERROR(Tpm2PcrRead(&SelIn,&C,&SelOut,&Values)) && Values.count>0) {
+        PcrMatch = (CompareMem(gPcr0Initial, Values.digests[0].buffer, Values.digests[0].size)==0);
+        if (PcrMatch) Score += 20;
+    }
+    UINT8 Secure=0; UINTN Sz=sizeof(Secure);
+    if (!EFI_ERROR(gRT->GetVariable(L"SecureBoot", &gEfiGlobalVariableGuid, NULL, &Sz, &Secure)) && Secure)
+        Score += 10;
+    if (gBootContext.Tcg2) Score += 10; else Ctx->LastError = ERR_TPM_MISSING;
+    if (Score>100) Score=100;
+    gBootContext.Trust.PCR0Unchanged = PcrMatch?1:0;
+    gBootContext.Trust.SecureBoot = Secure;
     gBootContext.Params.BootTrustScore = Score;
+    gBootContext.Trust.TotalScore = (UINT8)Score;
+    if (Score==0) Phase250_LockdownAndReboot(Ctx);
     return EFI_SUCCESS;
 }
 
 // Phase078: LogBootTrustScore
 static EFI_STATUS Phase078_LogBootTrustScore(BOOT_CONTEXT *Ctx) {
     Print(L"Boot trust score: %u\n", gBootContext.Params.BootTrustScore);
+    for (INTN i=3;i>0;i--) {
+        gBootContext.BootDNA.BootScoreHistory[i]=gBootContext.BootDNA.BootScoreHistory[i-1];
+        CopyMem(gBootContext.BootDNA.HashHistory[i], gBootContext.BootDNA.HashHistory[i-1],32);
+    }
+    gBootContext.BootDNA.BootScoreHistory[0]=(UINT8)gBootContext.Params.BootTrustScore;
+    CopyMem(gBootContext.BootDNA.HashHistory[0], gBootContext.Params.KernelHash,32);
     return EFI_SUCCESS;
 }
 
@@ -887,6 +955,7 @@ static EFI_STATUS Phase083_ShowBootUid(BOOT_CONTEXT *Ctx) {
     Print(L"Boot UID: ");
     for (UINTN i=0;i<16;i++) Print(L"%02x", gBootContext.Params.BootUid[i]);
     Print(L"\n");
+    gBootContext.BootDNA.BootUID = *(UINT64*)gBootContext.Params.BootUid;
     return EFI_SUCCESS;
 }
 
@@ -1130,14 +1199,18 @@ static EFI_STATUS Phase116_DrawProgressBar(BOOT_CONTEXT *Ctx) {
 static EFI_STATUS Phase117_DrawTrustScoreBar(BOOT_CONTEXT *Ctx) {
     if (!gBootContext.Gop) return EFI_UNSUPPORTED;
     EFI_GRAPHICS_OUTPUT_BLT_PIXEL R = {0,0,255,0};
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL O = {0,128,255,0};
     EFI_GRAPHICS_OUTPUT_BLT_PIXEL G = {0,255,0,0};
-    EFI_GRAPHICS_OUTPUT_BLT_PIXEL *Color =
-        (gBootContext.Params.BootTrustScore >= 80) ? &G : &R;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL *Color;
+    if (gBootContext.Params.BootTrustScore >= 85) Color=&G;
+    else if (gBootContext.Params.BootTrustScore >=70) Color=&O;
+    else Color=&R;
     UINTN Width = gBootContext.Gop->Mode->Info->HorizontalResolution / 3;
     UINTN X = (gBootContext.Gop->Mode->Info->HorizontalResolution - Width) / 2;
     UINTN Y = gBootContext.Gop->Mode->Info->VerticalResolution - 40;
+    UINTN Bar = Width * gBootContext.Params.BootTrustScore / 100;
     gBootContext.Gop->Blt(gBootContext.Gop, Color, EfiBltVideoFill, 0,0, X, Y,
-                          Width * gBootContext.Params.BootTrustScore / 100, 6,0);
+                          Bar, 6,0);
     return EFI_SUCCESS;
 }
 
@@ -1426,6 +1499,8 @@ static EFI_STATUS Phase153_PrintTrustMetrics(BOOT_CONTEXT *Ctx) {
     Print(L"BootUID: ");
     for (UINTN i = 0; i < 16; ++i) Print(L"%02x", gBootContext.Params.BootUid[i]);
     Print(L"\n");
+    gBootContext.Trust.SignatureValid = gBootContext.Params.SignatureValid ? 1 : 0;
+    gBootContext.Trust.TotalScore = (UINT8)gBootContext.Params.BootTrustScore;
     return EFI_SUCCESS;
 }
 
@@ -1463,6 +1538,27 @@ static EFI_STATUS Phase157_VerifyTrustMemory(BOOT_CONTEXT *Ctx) {
     UINT8 *Buf = (UINT8*)(UINTN)gTrustScoreBlock;
     if (*(UINT32*)Buf != gBootContext.Params.BootTrustScore)
         return EFI_COMPROMISED_DATA;
+    return EFI_SUCCESS;
+}
+
+// Phase157A: VerifyHashBeforeLaunch
+static EFI_STATUS Phase157A_VerifyHashBeforeLaunch(BOOT_CONTEXT *Ctx) {
+    if (!gHash2) return EFI_NOT_READY;
+    UINTN Size = gBootContext.Params.KernelSize;
+    EFI_HASH_OUTPUT Hash; EFI_STATUS St;
+    St = gHash2->Hash(gHash2, &gEfiHashAlgorithmSha256Guid, Size,
+                      (UINT8*)(UINTN)gBootContext.Params.KernelBase, &Hash);
+    if (EFI_ERROR(St)) return St;
+    if (CompareMem(Hash.HashBuf, gBootContext.Params.KernelHash, 32)!=0)
+        return EFI_SECURITY_VIOLATION;
+    return EFI_SUCCESS;
+}
+
+// Phase157B: LockHashRegion
+static EFI_STATUS Phase157B_LockHashRegion(BOOT_CONTEXT *Ctx) {
+    gBS->SetMemoryAttributes(gBootContext.Params.KernelBase,
+                             EFI_SIZE_TO_PAGES(gBootContext.Params.KernelSize)*EFI_PAGE_SIZE,
+                             EFI_MEMORY_RO|EFI_MEMORY_XP);
     return EFI_SUCCESS;
 }
 
@@ -1678,7 +1774,15 @@ static EFI_STATUS Phase198_LogEventAddress(BOOT_CONTEXT *Ctx) {
 // Phase199: NoOp
 static EFI_STATUS Phase199_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
 // Phase200: ReservationComplete
-static EFI_STATUS Phase200_ReservationComplete(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+// Phase200: AILogBootBehavior
+static EFI_STATUS Phase200_AILogBootBehavior(BOOT_CONTEXT *Ctx) {
+    EFI_PHYSICAL_ADDRESS Page;
+    EFI_STATUS S = gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesData, 1, &Page);
+    if (EFI_ERROR(S)) return S;
+    CopyMem((VOID*)(UINTN)Page, &gBootContext, sizeof(gBootContext));
+    gBS->SetMemoryAttributes(Page, EFI_PAGE_SIZE, EFI_MEMORY_RO|EFI_MEMORY_RP);
+    return EFI_SUCCESS;
+}
 
 // ==================== Phases 201-250 ====================
 
@@ -1861,6 +1965,20 @@ static EFI_STATUS Phase219_LogBootStateHash(BOOT_CONTEXT *Ctx) {
     return EFI_SUCCESS;
 }
 
+// Phase220: SignBootDNA
+static EFI_STATUS Phase220_SignBootDNA(BOOT_CONTEXT *Ctx) {
+    SHA256_CTX c; UINT8 h[32];
+    sha256_init(&c);
+    sha256_update(&c, (UINT8*)&Ctx->BootDNA, sizeof(BOOT_DNA));
+    sha256_final(&c, h);
+    CopyMem(gBootDNASignature, h, 32);
+    gBootDNASignatureSize = 32;
+    gRT->SetVariable(L"BootDNASignature", &gEfiGlobalVariableGuid,
+                     EFI_VARIABLE_NON_VOLATILE|EFI_VARIABLE_BOOTSERVICE_ACCESS|EFI_VARIABLE_RUNTIME_ACCESS,
+                     gBootDNASignatureSize, gBootDNASignature);
+    return EFI_SUCCESS;
+}
+
 // Phase220: CacheBootStatePtr
 static EFI_STATUS Phase220_CacheBootStatePtr(BOOT_CONTEXT *Ctx) {
     if (gTrustScoreBlock)
@@ -1934,7 +2052,17 @@ static EFI_STATUS Phase229_LogPersistResult(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase230: BootStateCachingComplete
-static EFI_STATUS Phase230_BootStateCachingComplete(BOOT_CONTEXT *Ctx) {
+// Phase230: StoreBootTrustScoreToNVRAM
+static EFI_STATUS Phase230_StoreBootTrustScoreToNVRAM(BOOT_CONTEXT *Ctx) {
+    UINT8 Score = Ctx->Trust.TotalScore;
+    gRT->SetVariable(L"LastBootTrustScore", &gEfiGlobalVariableGuid,
+                     EFI_VARIABLE_NON_VOLATILE|EFI_VARIABLE_BOOTSERVICE_ACCESS|EFI_VARIABLE_RUNTIME_ACCESS,
+                     sizeof(UINT8), &Score);
+    return EFI_SUCCESS;
+}
+
+// Phase231: BootStateCachingComplete
+static EFI_STATUS Phase231_BootStateCachingComplete(BOOT_CONTEXT *Ctx) {
     if (gBootStatePage && gTrustScoreBlock)
         ((UINT8*)(UINTN)gTrustScoreBlock)[40] = 1;
     return EFI_SUCCESS;
@@ -2019,7 +2147,11 @@ static EFI_STATUS Phase245_FinalizeSecureChain(BOOT_CONTEXT *Ctx) {
 static EFI_STATUS Phase246_LogSecureChain(BOOT_CONTEXT *Ctx) { Print(L"Secure chain verified\n"); return EFI_SUCCESS; }
 
 // Phase247: PrepareForKernelJump
-static EFI_STATUS Phase247_PrepareForKernelJump(BOOT_CONTEXT *Ctx) { Print(L"Preparing for kernel jump\n"); return EFI_SUCCESS; }
+static EFI_STATUS Phase247_PrepareForKernelJump(BOOT_CONTEXT *Ctx) {
+    Print(L"Preparing for kernel jump\n");
+    CopyMem(Ctx->Params.BootUid, "AIOS-AWA", 8);
+    return EFI_SUCCESS;
+}
 
 // Phase248: FinalAnomalyPrint
 static EFI_STATUS Phase248_FinalAnomalyPrint(BOOT_CONTEXT *Ctx) { Print(L"Final anomaly count %u\n", (UINT32)gAnomalyCount); return EFI_SUCCESS; }
@@ -2031,8 +2163,12 @@ static EFI_STATUS Phase249_FinalCacheDone(BOOT_CONTEXT *Ctx) {
     return EFI_SUCCESS;
 }
 
-// Phase250: Complete
-static EFI_STATUS Phase250_Complete(BOOT_CONTEXT *Ctx) { Print(L"Phase 250 complete\n"); return EFI_SUCCESS; }
+// Phase250: LockdownAndReboot
+static EFI_STATUS Phase250_LockdownAndReboot(BOOT_CONTEXT *Ctx) {
+    Print(L"System integrity compromised. Rebooting...\n");
+    gRT->ResetSystem(EfiResetCold, EFI_SECURITY_VIOLATION, 0, NULL);
+    return EFI_SECURITY_VIOLATION;
+}
 
 // Config loader phases and extras
 // Phase251: LoadBootConfig

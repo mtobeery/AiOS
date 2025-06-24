@@ -27,6 +27,8 @@ typedef struct {
 typedef struct {
     UINT8 TPM_OK;
     UINT8 SignatureValid;
+    UINT8 PCR0Unchanged;
+    UINT8 SecureBoot;
     UINT8 FallbackUsed;
     UINT8 MemoryScore;
     UINT8 TotalScore;
@@ -37,6 +39,8 @@ typedef struct {
     UINT8 PCR0[32];
     UINT8 KernelHash[32];
     UINT8 FinalBootScore;
+    UINT8 BootScoreHistory[4];
+    UINT8 HashHistory[4][32];
 } BOOT_DNA;
 
 typedef struct {
