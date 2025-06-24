@@ -19,6 +19,8 @@ typedef struct {
     BOOLEAN SignatureValid;
     UINT32 BootTrustScore;
     UINT8 BootUid[16];
+    UINT32 FallbackMode;
+    EFI_PHYSICAL_ADDRESS LoaderParamsPtr;
 } LOADER_PARAMS;
 
 typedef struct {

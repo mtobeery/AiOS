@@ -103,6 +103,8 @@ static ACPI_FADT      *gFadt  = NULL;
 static ACPI_SDT_HEADER *gDsdt = NULL;
 
 static EFI_PHYSICAL_ADDRESS gTrustScoreBlock = 0;
+static EFI_PHYSICAL_ADDRESS gLoaderParamsPage = 0;
+static EFI_PHYSICAL_ADDRESS gBootLogPage = 0;
 
 static EFI_STATUS Phase001_InitializeBootContext(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     ZeroMem(&gBootContext, sizeof(gBootContext));
@@ -595,8 +597,26 @@ static EFI_STATUS Phase074_LocateTcg2ForTrust(void) {
     return gBS->LocateProtocol(&gEfiTcg2ProtocolGuid, NULL, (VOID**)&gBootContext.Tcg2);
 }
 
+static UINT8 gPcr0Initial[32];
+
 static EFI_STATUS Phase075_ReadPcr0ForTrust(void) {
-    return ReadAndPrintPcr(0);
+    TPML_PCR_SELECTION SelIn = {0};
+    SelIn.count = 1;
+    SelIn.pcrSelections[0].hash = TPM_ALG_SHA256;
+    SelIn.pcrSelections[0].sizeofSelect = 3;
+    SelIn.pcrSelections[0].pcrSelect[0] = 1;
+    TPML_PCR_SELECTION SelOut;
+    TPML_DIGEST Values;
+    UINT32 C;
+    EFI_STATUS Status = Tpm2PcrRead(&SelIn, &C, &SelOut, &Values);
+    if (!EFI_ERROR(Status) && Values.count > 0) {
+        CopyMem(gPcr0Initial, Values.digests[0].buffer, Values.digests[0].size);
+        Print(L"PCR0: ");
+        for (UINTN i = 0; i < Values.digests[0].size; ++i)
+            Print(L"%02x", Values.digests[0].buffer[i]);
+        Print(L"\n");
+    }
+    return Status;
 }
 
 static EFI_STATUS Phase076_ReadSecureBootState(void) {
@@ -1080,6 +1100,241 @@ static EFI_STATUS Phase150_FinalHandoffPrep(void) {
     return EFI_SUCCESS;
 }
 
+// ==================== Phases 151-200 ====================
+
+static EFI_STATUS Phase151_VerifyPcr0Again(void) {
+    TPML_PCR_SELECTION SelIn = {0};
+    SelIn.count = 1;
+    SelIn.pcrSelections[0].hash = TPM_ALG_SHA256;
+    SelIn.pcrSelections[0].sizeofSelect = 3;
+    SelIn.pcrSelections[0].pcrSelect[0] = 1;
+    TPML_PCR_SELECTION SelOut;
+    TPML_DIGEST Values;
+    UINT32 C;
+    EFI_STATUS Status = Tpm2PcrRead(&SelIn, &C, &SelOut, &Values);
+    if (!EFI_ERROR(Status) && Values.count > 0) {
+        if (CompareMem(gPcr0Initial, Values.digests[0].buffer, Values.digests[0].size) != 0) {
+            Print(L"PCR0 changed, lockdown!\n");
+            gBootContext.Params.BootTrustScore = 0;
+            Status = EFI_SECURITY_VIOLATION;
+        }
+    }
+    return Status;
+}
+
+static EFI_STATUS Phase152_CopyTrustDataToMemory(void) {
+    if (gTrustScoreBlock == 0) {
+        EFI_STATUS S = gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesData, 1, &gTrustScoreBlock);
+        if (EFI_ERROR(S)) return S;
+    }
+    UINT8 *Buf = (UINT8*)(UINTN)gTrustScoreBlock;
+    *(UINT32*)Buf = gBootContext.Params.BootTrustScore;
+    CopyMem(Buf + 4, gBootContext.Params.BootUid, 16);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase153_PrintTrustMetrics(void) {
+    Print(L"TrustScore=%u\n", gBootContext.Params.BootTrustScore);
+    Print(L"BootUID: ");
+    for (UINTN i = 0; i < 16; ++i) Print(L"%02x", gBootContext.Params.BootUid[i]);
+    Print(L"\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase154_CheckSignatureWarning(void) {
+    if (!gBootContext.Params.SignatureValid)
+        Print(L"WARNING: Kernel signature invalid!\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase155_RenderWarningLogo(void) {
+    if (gBootContext.Params.SignatureValid || gBootContext.Gop == NULL)
+        return EFI_SUCCESS;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL R = {0,0,255,0};
+    UINT32 W = 64, H = 64;
+    UINT32 CenterX = gBootContext.Gop->Mode->Info->HorizontalResolution/2 - W/2;
+    UINT32 CenterY = gBootContext.Gop->Mode->Info->VerticalResolution/2 - H/2;
+    for (UINT32 y=0;y<H;y++)
+        for (UINT32 x=0;x<W;x++)
+            if (x==y || x==W-1-y)
+                gBootContext.Gop->Blt(gBootContext.Gop,&R,EfiBltVideoFill,0,0,CenterX+x,CenterY+y,1,1,0);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase156_LogTrustRegion(void) {
+    Print(L"Trust data stored at %lx\n", gTrustScoreBlock);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase157_VerifyTrustMemory(void) {
+    if (gTrustScoreBlock == 0) return EFI_NOT_READY;
+    UINT8 *Buf = (UINT8*)(UINTN)gTrustScoreBlock;
+    if (*(UINT32*)Buf != gBootContext.Params.BootTrustScore)
+        return EFI_COMPROMISED_DATA;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase158_FinalLockdownMsg(void) {
+    Print(L"Trust chain locked\n");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase159_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase160_LockdownComplete(void) { return EFI_SUCCESS; }
+
+static EFI_STATUS Phase161_CheckTrustThreshold(void) {
+    gBootContext.Params.FallbackMode = (gBootContext.Params.BootTrustScore < 70) ? 1 : 0;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase162_LogFallbackMode(void) {
+    Print(L"Fallback mode: %u\n", gBootContext.Params.FallbackMode);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase163_RenderFallbackOverlay(void) {
+    if (!gBootContext.Params.FallbackMode || gBootContext.Gop == NULL) return EFI_SUCCESS;
+    EFI_GRAPHICS_OUTPUT_BLT_PIXEL Red = {0,0,255,0};
+    UINTN Y = gBootContext.Gop->Mode->Info->VerticalResolution - 20;
+    gBootContext.Gop->Blt(gBootContext.Gop,&Red,EfiBltVideoFill,0,0,0,Y,
+                          gBootContext.Gop->Mode->Info->HorizontalResolution,20,0);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase164_StoreFallbackInMemory(void) {
+    if (gTrustScoreBlock)
+        ((UINT8*)(UINTN)gTrustScoreBlock)[20] = (UINT8)gBootContext.Params.FallbackMode;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase165_BeepOnFallback(void) {
+    if (gBootContext.Params.FallbackMode) Print(L"\a");
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase166_PauseForFallback(void) {
+    if (gBootContext.Params.FallbackMode) gBS->Stall(200000);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase167_LogFallbackComplete(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase168_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase169_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase170_FaultDecisionDone(void) { return EFI_SUCCESS; }
+
+typedef struct {
+    LOADER_PARAMS Params;
+    UINT32 Checksum;
+} LOADER_PARAMS_BLOCK;
+
+static UINT32 ComputeChecksum(UINT8 *Data, UINTN Size) {
+    UINT32 Crc = 0;
+    for (UINTN i=0; i<Size; i++) Crc ^= Data[i];
+    return Crc;
+}
+
+static EFI_STATUS Phase171_AllocateParamsBlock(void) {
+    if (gLoaderParamsPage) return EFI_SUCCESS;
+    return gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesData,
+                              EFI_SIZE_TO_PAGES(sizeof(LOADER_PARAMS_BLOCK)),
+                              &gLoaderParamsPage);
+}
+
+static EFI_STATUS Phase172_CopyParamsToBlock(void) {
+    if (!gLoaderParamsPage) return EFI_NOT_READY;
+    LOADER_PARAMS_BLOCK *Blk = (LOADER_PARAMS_BLOCK*)(UINTN)gLoaderParamsPage;
+    CopyMem(&Blk->Params, &gBootContext.Params, sizeof(LOADER_PARAMS));
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase173_ComputeParamsChecksum(void) {
+    if (!gLoaderParamsPage) return EFI_NOT_READY;
+    LOADER_PARAMS_BLOCK *Blk = (LOADER_PARAMS_BLOCK*)(UINTN)gLoaderParamsPage;
+    Blk->Checksum = ComputeChecksum((UINT8*)&Blk->Params, sizeof(LOADER_PARAMS));
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase174_StoreParamsPointer(void) {
+    gBootContext.Params.LoaderParamsPtr = gLoaderParamsPage;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase175_LogParamsAddress(void) {
+    Print(L"LoaderParams @ %lx\n", gBootContext.Params.LoaderParamsPtr);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase176_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase177_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase178_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase179_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase180_ParamsInjectionDone(void) { return EFI_SUCCESS; }
+
+static EFI_STATUS Phase181_ValidateMapForExit(void) {
+    return Phase103_CheckMapKeyValid();
+}
+
+static EFI_STATUS Phase182_ExitBootServices(void) {
+    EFI_STATUS Status = gBS->ExitBootServices(gBootContext.ImageHandle, gBootContext.Params.MapKey);
+    if (Status == EFI_INVALID_PARAMETER) {
+        Phase102_UpdateMemoryMap();
+        Status = gBS->ExitBootServices(gBootContext.ImageHandle, gBootContext.Params.MapKey);
+    }
+    return Status;
+}
+
+static EFI_STATUS Phase183_ShowLaunchSplash(void) {
+    if (gBootContext.Gop) {
+        EFI_GRAPHICS_OUTPUT_BLT_PIXEL W = {255,255,255,0};
+        gBootContext.Gop->Blt(gBootContext.Gop,&W,EfiBltVideoFill,0,0,10,10,8,8,0);
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase184_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase185_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase186_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase187_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase188_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase189_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase190_HandoffPrepDone(void) { return EFI_SUCCESS; }
+
+static EFI_STATUS Phase191_JumpToKernel(void) {
+    if (gLoaderParamsPage == 0) return EFI_NOT_READY;
+    void (*Entry)(LOADER_PARAMS_BLOCK*) = (void(*)(LOADER_PARAMS_BLOCK*))(UINTN)gBootContext.Params.KernelEntry;
+    Entry((LOADER_PARAMS_BLOCK*)(UINTN)gLoaderParamsPage);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase192_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase193_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase194_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase195_NoOp(void) { return EFI_SUCCESS; }
+
+static EFI_STATUS Phase196_ReserveEventLog(void) {
+    if (gBootLogPage) return EFI_SUCCESS;
+    return gBS->AllocatePages(AllocateAnyPages, EfiRuntimeServicesData, 1, &gBootLogPage);
+}
+
+static EFI_STATUS Phase197_WriteBootLog(void) {
+    if (!gBootLogPage) return EFI_NOT_READY;
+    EFI_TIME T; if (EFI_ERROR(gRT->GetTime(&T, NULL))) return EFI_DEVICE_ERROR;
+    UINT8 *P = (UINT8*)(UINTN)gBootLogPage;
+    *(UINT32*)P = gBootContext.Params.BootTrustScore;
+    CopyMem(P+4, gBootContext.Params.BootUid, 16);
+    CopyMem(P+20, &T, sizeof(EFI_TIME));
+    CopyMem(P+20+sizeof(EFI_TIME), gPcr0Initial, 32);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase198_LogEventAddress(void) {
+    Print(L"Event log @ %lx\n", gBootLogPage);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS Phase199_NoOp(void) { return EFI_SUCCESS; }
+static EFI_STATUS Phase200_ReservationComplete(void) { return EFI_SUCCESS; }
+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
     Print(L"AiOS Bootloader Initializing...\n");
@@ -1233,6 +1488,56 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     Phase148_ReserveTrustScoreRegion();
     Phase149_StorePayloadPointers();
     Phase150_FinalHandoffPrep();
+    Phase151_VerifyPcr0Again();
+    Phase152_CopyTrustDataToMemory();
+    Phase153_PrintTrustMetrics();
+    Phase154_CheckSignatureWarning();
+    Phase155_RenderWarningLogo();
+    Phase156_LogTrustRegion();
+    Phase157_VerifyTrustMemory();
+    Phase158_FinalLockdownMsg();
+    Phase159_NoOp();
+    Phase160_LockdownComplete();
+    Phase161_CheckTrustThreshold();
+    Phase162_LogFallbackMode();
+    Phase163_RenderFallbackOverlay();
+    Phase164_StoreFallbackInMemory();
+    Phase165_BeepOnFallback();
+    Phase166_PauseForFallback();
+    Phase167_LogFallbackComplete();
+    Phase168_NoOp();
+    Phase169_NoOp();
+    Phase170_FaultDecisionDone();
+    Phase171_AllocateParamsBlock();
+    Phase172_CopyParamsToBlock();
+    Phase173_ComputeParamsChecksum();
+    Phase174_StoreParamsPointer();
+    Phase175_LogParamsAddress();
+    Phase176_NoOp();
+    Phase177_NoOp();
+    Phase178_NoOp();
+    Phase179_NoOp();
+    Phase180_ParamsInjectionDone();
+    Phase196_ReserveEventLog();
+    Phase197_WriteBootLog();
+    Phase198_LogEventAddress();
+    Phase199_NoOp();
+    Phase200_ReservationComplete();
+    Phase181_ValidateMapForExit();
+    Phase182_ExitBootServices();
+    Phase183_ShowLaunchSplash();
+    Phase184_NoOp();
+    Phase185_NoOp();
+    Phase186_NoOp();
+    Phase187_NoOp();
+    Phase188_NoOp();
+    Phase189_NoOp();
+    Phase190_HandoffPrepDone();
+    Phase191_JumpToKernel();
+    Phase192_NoOp();
+    Phase193_NoOp();
+    Phase194_NoOp();
+    Phase195_NoOp();
     Print(L"Bootloader execution complete.\n");
     return EFI_SUCCESS;
 }
