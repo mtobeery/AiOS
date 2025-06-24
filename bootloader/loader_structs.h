@@ -24,6 +24,21 @@ typedef struct {
 } LOADER_PARAMS;
 
 typedef struct {
+    UINT8 TPM_OK;
+    UINT8 SignatureValid;
+    UINT8 FallbackUsed;
+    UINT8 MemoryScore;
+    UINT8 TotalScore;
+} TRUST_SCORE;
+
+typedef struct {
+    UINT64 BootUID;
+    UINT8 PCR0[32];
+    UINT8 KernelHash[32];
+    UINT8 FinalBootScore;
+} BOOT_DNA;
+
+typedef struct {
     EFI_HANDLE ImageHandle;
     EFI_SYSTEM_TABLE *SystemTable;
     EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
@@ -33,6 +48,9 @@ typedef struct {
     EFI_TCG2_PROTOCOL *Tcg2;
     EFI_FILE_HANDLE KernelFile;
     LOADER_PARAMS Params;
+    TRUST_SCORE Trust;
+    BOOT_DNA BootDNA;
+    UINT8 TrustThreshold;
 } BOOT_CONTEXT;
 
 
