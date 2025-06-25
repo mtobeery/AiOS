@@ -99,6 +99,16 @@ typedef struct {
     BOOLEAN trust_ready;
     BOOLEAN trust_finalized;
     UINT8  trust_anchor[32];
+    /* AI core fields */
+    UINT64 ai_global_trust_score;
+    UINT8  ai_status;
+    UINT64 ai_history[128];
+    UINT64 intent_alignment_score;
+    UINT64 ai_effectiveness;
+    UINT64 ai_retrain_id;
+    UINT64 ai_entropy_vector[16];
+    UINT64 trust_recovery_map[16];
+    BOOLEAN ai_core_block_b_ready;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
