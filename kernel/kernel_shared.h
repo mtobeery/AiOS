@@ -128,6 +128,11 @@ typedef struct {
     UINT64  trust_normalized[20];
     UINT64  meta_trust_score;
     UINT64  shared_trust_cache[8];
+    struct {
+        UINT64 trust;
+        UINT64 entropy;
+    } entropy_snapshot_buffer[32];
+    UINTN entropy_snapshot_index;
     /* AI core fields */
     UINT64 ai_global_trust_score;
     UINT8  ai_status;
