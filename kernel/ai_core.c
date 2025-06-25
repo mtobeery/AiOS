@@ -1,5 +1,6 @@
 #include "kernel_shared.h"
 #include "telemetry_mind.h"
+#include "sha256.h"
 #include <Library/BaseMemoryLib.h>
 #include <Library/BaseLib.h>
 #include <Library/PrintLib.h>
@@ -16,6 +17,7 @@ static UINT64 gAdvisoryHistory[128];
 static UINTN  gAdvisoryHead = 0;
 static UINT64 gAdvisorLogRing[64];
 static UINTN  gAdvisorLogHead = 0;
+static UINT64 gPrevEntropyVec[16];
 
 EFI_STATUS AICore_ReportEvent(const CHAR8 *name) {
     Print(L"[AI EVT] %a\n", name);
@@ -164,6 +166,512 @@ UINTN AICore_ScoreStorageMindPerformance(KERNEL_CONTEXT *ctx) {
     UINTN score = (UINTN)((ctx->EntropyScore & 0xFF) + (Trust_GetCurrentScore() & 0xFF));
     Telemetry_LogEvent("StorageMindScore", score, 0);
     return score;
+}
+
+// === Phase 701: InitializeAICoreSubsystem ===
+EFI_STATUS AICorePhase701_InitializeSubsystem(KERNEL_CONTEXT *ctx) {
+    ZeroMem(ctx->ai_trust_matrix, sizeof(ctx->ai_trust_matrix));
+    ZeroMem(ctx->ai_prediction_cache, sizeof(ctx->ai_prediction_cache));
+    ZeroMem(ctx->ai_entropy_input, sizeof(ctx->ai_entropy_input));
+    ZeroMem(ctx->ai_history, sizeof(ctx->ai_history));
+    ZeroMem(ctx->ai_rule_weights, sizeof(ctx->ai_rule_weights));
+    ctx->ai_status = 1;
+    Telemetry_LogEvent("AI701_Init", 1, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 702: AITrustMatrixBootstrap ===
+EFI_STATUS AICorePhase702_TrustMatrixBootstrap(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 10; ++i)
+        for (UINTN j = 0; j < 10; ++j)
+            ctx->ai_trust_matrix[i][j] = (i == j) ? 55 : 45;
+    Telemetry_LogEvent("AI702_TrustSeed", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 703: AIPredictiveEntropyVectorInit ===
+EFI_STATUS AICorePhase703_PredictiveEntropyVectorInit(KERNEL_CONTEXT *ctx) {
+    UINT64 tsc = AsmReadTsc();
+    for (UINTN i = 0; i < 16; ++i)
+        ctx->ai_entropy_input[i] = tsc ^ (0xA5A5A5A5ULL * (i + 1));
+    Telemetry_LogEvent("AI703_EntropyInit", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 704: AIMemoryScoreTrendClassifier ===
+EFI_STATUS AICorePhase704_MemoryTrendClassifier(KERNEL_CONTEXT *ctx) {
+    UINTN up = 0, down = 0;
+    for (UINTN i = 1; i < 5; ++i) {
+        UINT64 cur = ctx->memory_elapsed_tsc[i];
+        UINT64 prev = ctx->memory_elapsed_tsc[i - 1];
+        if (cur > prev) up++; else if (cur < prev) down++;
+    }
+    UINT64 cls = 0;
+    if ((up == 4) || (down == 4)) cls = 1; else if (up > 2 && down > 2) cls = 2;
+    ctx->ai_history[0] = cls;
+    Telemetry_LogEvent("AI704_MemTrend", (UINTN)cls, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 705: AIReasoningConfidenceBoost ===
+EFI_STATUS AICorePhase705_ReasoningConfidenceBoost(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index;
+    UINTN inc = 0;
+    for (UINTN i = 0; i < 5; ++i) {
+        UINTN a = (idx + 19 - i) % 20;
+        UINTN b = (idx + 18 - i) % 20;
+        if (ctx->phase_trust[a] > ctx->phase_trust[b]) inc++;
+    }
+    if (inc >= 3 && ctx->avg_latency < ctx->phase_latency[(idx + 15) % 20])
+        ctx->ai_effectiveness++;
+    Telemetry_LogEvent("AI705_ConfBoost", (UINTN)ctx->ai_effectiveness, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 706: AIEntropyImpactModeler ===
+EFI_STATUS AICorePhase706_EntropyImpactModeler(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 16; ++i) {
+        INTN diff = (INTN)ctx->ai_entropy_input[i] - (INTN)gPrevEntropyVec[i];
+        if (diff > 0)
+            ctx->ai_rule_weights[i] += 1;
+        else if (diff < 0)
+            ctx->ai_rule_weights[i] -= 1;
+        gPrevEntropyVec[i] = ctx->ai_entropy_input[i];
+    }
+    Telemetry_LogEvent("AI706_Impact", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 707: AITrustCurveGenerator ===
+EFI_STATUS AICorePhase707_TrustCurveGenerator(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index;
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < 10; ++i)
+        sum += ctx->phase_trust[(idx + 20 - i) % 20];
+    ctx->ai_history[1] = sum / 10;
+    Telemetry_LogEvent("AI707_Curve", (UINTN)ctx->ai_history[1], 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 708: AIPredictionCacheSeeder ===
+EFI_STATUS AICorePhase708_SeedPredictionCache(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 32; ++i)
+        ctx->ai_prediction_cache[i] = i % 4;
+    Telemetry_LogEvent("AI708_CacheSeed", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 709: AICoreSelfValidationCycle ===
+EFI_STATUS AICorePhase709_SelfValidation(KERNEL_CONTEXT *ctx) {
+    BOOLEAN bad = FALSE;
+    for (UINTN i = 0; i < 32; ++i)
+        if (ctx->ai_prediction_cache[i] > 0xFFFFFFFFULL)
+            bad = TRUE;
+    if (bad) ctx->ai_finalized = FALSE;
+    Telemetry_LogEvent("AI709_SelfVal", bad, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 710: AICorePhasePerformanceProfiler ===
+EFI_STATUS AICorePhase710_PerformanceProfiler(KERNEL_CONTEXT *ctx) {
+    UINT64 total = 0;
+    for (UINTN i = 0; i < 10; ++i)
+        total += ctx->cpu_elapsed_tsc[i];
+    ctx->ai_history[2] = total / 10;
+    Telemetry_LogEvent("AI710_Perf", (UINTN)ctx->ai_history[2], 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 711: AIIntentAlignmentEvaluator ===
+EFI_STATUS AICorePhase711_IntentAlignmentEvaluator(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 20;
+    UINTN prev = (idx + 19) % 20;
+    if (ctx->phase_trust[idx] > ctx->phase_trust[prev] &&
+        ctx->phase_latency[idx] < ctx->phase_latency[prev])
+        ctx->intent_alignment_score++;
+    Telemetry_LogEvent("AI711_Intent", (UINTN)ctx->intent_alignment_score, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 712: AICoreEntropyDriftDetector ===
+EFI_STATUS AICorePhase712_EntropyDriftDetector(KERNEL_CONTEXT *ctx) {
+    UINTN drift = 0;
+    for (UINTN i = 0; i < 16; ++i) {
+        UINT64 prev = gPrevEntropyVec[i];
+        UINT64 cur = ctx->ai_entropy_input[i];
+        if (prev && (cur > prev + (prev >> 2) || cur + (cur >> 2) < prev))
+            drift++;
+        gPrevEntropyVec[i] = cur;
+    }
+    if (drift >= 3)
+        Telemetry_LogEvent("AI712_Drift", drift, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 713: AITrustBackpropagationCorrector ===
+EFI_STATUS AICorePhase713_TrustBackpropagation(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 20;
+    UINTN prev = (idx + 19) % 20;
+    if (ctx->phase_trust[idx] < ctx->phase_trust[prev])
+        for (UINTN i = 0; i < 16; ++i)
+            ctx->ai_rule_weights[i] -= 1;
+    Telemetry_LogEvent("AI713_Backprop", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 714: AIReasoningStateSync ===
+EFI_STATUS AICorePhase714_ReasoningStateSync(KERNEL_CONTEXT *ctx) {
+    UINT64 val = ctx->entropy_gap ^ ctx->avg_latency;
+    for (UINTN i = 0; i < 16; ++i)
+        ctx->ai_entropy_vector[i] = (ctx->ai_entropy_vector[i] + val) / 2;
+    Telemetry_LogEvent("AI714_StateSync", (UINTN)val, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 715: AIDynamicRuleWeightBalancer ===
+EFI_STATUS AICorePhase715_RuleWeightBalancer(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 961; ++i) {
+        ctx->ai_rule_weights[i] = (INT16)(ctx->ai_rule_weights[i] * 9 / 10);
+        if (ctx->ai_rule_weights[i] > 127) ctx->ai_rule_weights[i] = 127;
+        if (ctx->ai_rule_weights[i] < -127) ctx->ai_rule_weights[i] = -127;
+    }
+    Telemetry_LogEvent("AI715_WeightBal", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 716: AIEntropySignatureGenerator ===
+EFI_STATUS AICorePhase716_EntropySignatureGenerator(KERNEL_CONTEXT *ctx) {
+    UINT64 hash = 0;
+    for (UINTN i = 0; i < 16; ++i) hash ^= ctx->ai_entropy_input[i];
+    for (UINTN i = 0; i < 10; ++i)
+        for (UINTN j = 0; j < 10; ++j)
+            hash ^= ctx->ai_trust_matrix[i][j];
+    for (UINTN i = 0; i < 32; ++i)
+        ctx->ai_advisory_signature[i] = (UINT8)(hash >> (i % 8));
+    Telemetry_LogEvent("AI716_Sign", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 717: AICoreTrustShockAbsorber ===
+EFI_STATUS AICorePhase717_TrustShockAbsorber(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 20;
+    UINTN prev = (idx + 19) % 20;
+    UINT64 cur = ctx->phase_trust[idx];
+    UINT64 ref = ctx->phase_trust[prev];
+    if (ref && cur + (ref / 5) < ref) {
+        UINT64 t1 = ctx->phase_trust[(prev + 19) % 20];
+        UINT64 t2 = ctx->phase_trust[(prev + 18) % 20];
+        ctx->phase_trust[idx] = (cur + ref + t1 + t2) / 4;
+    }
+    Telemetry_LogEvent("AI717_Shock", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 718: AIAdaptivePredictionRegulator ===
+EFI_STATUS AICorePhase718_AdaptivePredictionRegulator(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 32;
+    UINT64 actual = ctx->trust_score;
+    UINT64 pred = ctx->ai_prediction_cache[idx];
+    ctx->ai_prediction_cache[idx] = (pred + actual) / 2;
+    Telemetry_LogEvent("AI718_AdaptPred", idx, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 719: AIContextAwarenessEnabler ===
+EFI_STATUS AICorePhase719_ContextAwarenessEnabler(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 128;
+    ctx->ai_history[idx] = ctx->entropy_gap;
+    Telemetry_LogEvent("AI719_Context", idx, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 720: AITrainingCyclePlanner ===
+EFI_STATUS AICorePhase720_TrainingCyclePlanner(KERNEL_CONTEXT *ctx) {
+    UINTN drift = 0;
+    for (UINTN i = 0; i < 16; ++i)
+        if (ctx->ai_entropy_input[i] > gPrevEntropyVec[i] * 2)
+            drift++;
+    if (ctx->entropy_usage_percent > 80 || drift > 5)
+        ctx->ai_retrain_id++;
+    Telemetry_LogEvent("AI720_TrainPlan", ctx->ai_retrain_id, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 721: AIEffectivenessHeuristicUpdater ===
+EFI_STATUS AICorePhase721_EffectivenessHeuristicUpdater(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 20;
+    UINTN prev = (idx + 19) % 20;
+    UINT64 delta = ctx->phase_trust[idx] - ctx->phase_trust[prev];
+    ctx->ai_effectiveness = (ctx->ai_effectiveness + delta) / 2;
+    Telemetry_LogEvent("AI721_EffHeur", (UINTN)ctx->ai_effectiveness, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 722: AISupervisionLayerValidator ===
+EFI_STATUS AICorePhase722_SupervisionLayerValidator(KERNEL_CONTEXT *ctx) {
+    BOOLEAN alert = FALSE;
+    for (UINTN i = 0; i < 16; ++i)
+        if (ctx->ai_entropy_input[i] > (1ULL << 48)) alert = TRUE;
+    if (alert) Telemetry_LogEvent("AI722_Alert", 1, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 723: AIEntropyUsageScorer ===
+EFI_STATUS AICorePhase723_EntropyUsageScorer(KERNEL_CONTEXT *ctx) {
+    UINT64 total = 0;
+    for (UINTN i = 0; i < 16; ++i) total += ctx->ai_entropy_vector[i];
+    ctx->entropy_usage_percent = (UINT8)(total % 100);
+    Telemetry_LogEvent("AI723_EntUsage", ctx->entropy_usage_percent, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 724: AICoreFinalizationConditionCheck ===
+EFI_STATUS AICorePhase724_FinalizationCheck(KERNEL_CONTEXT *ctx) {
+    if (ctx->trust_score > 80 && ctx->avg_latency < 100 && ctx->ai_retrain_id)
+        ctx->ai_finalized = TRUE;
+    Telemetry_LogEvent("AI724_FinalChk", ctx->ai_finalized, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 725: AICoreRootHashVerifier ===
+EFI_STATUS AICorePhase725_RootHashVerifier(KERNEL_CONTEXT *ctx) {
+    UINT64 sig = 0;
+    for (UINTN i = 0; i < 32; ++i) sig ^= ctx->ai_advisory_signature[i];
+    if (ctx->ai_root_reasoning_tree_hash != sig)
+        ctx->ai_state |= 1;
+    Telemetry_LogEvent("AI725_RootHash", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 726: AICoreShutdownHandoffPrep ===
+EFI_STATUS AICorePhase726_ShutdownHandoffPrep(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 16 && i < 64; ++i) {
+        ctx->snapshot_buffer[i].trust = ctx->ai_entropy_vector[i];
+        ctx->snapshot_buffer[i].latency = ctx->ai_history[i];
+    }
+    Telemetry_LogEvent("AI726_Handoff", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 727: AIPredictiveTrustValidator ===
+EFI_STATUS AICorePhase727_PredictiveTrustValidator(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 32;
+    UINT64 pred = ctx->ai_prediction_cache[idx];
+    ctx->ai_history[4] = (pred <= ctx->trust_score);
+    Telemetry_LogEvent("AI727_TrustVal", idx, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 728: AIEntropyAnomalySuppressor ===
+EFI_STATUS AICorePhase728_AnomalySuppressor(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 16; ++i) {
+        UINT64 prev = gPrevEntropyVec[i];
+        if (prev && ctx->ai_entropy_input[i] > prev * 3)
+            ctx->ai_entropy_input[i] = prev * 3;
+    }
+    Telemetry_LogEvent("AI728_Suppress", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 729: AICoreSelfFeedbackLoop ===
+EFI_STATUS AICorePhase729_SelfFeedbackLoop(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 10; ++i)
+        ctx->ai_rule_weights[i] += (INT16)(ctx->ai_history[i] % 3) - 1;
+    Telemetry_LogEvent("AI729_Feedback", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 730: AICoreFinalStateExporter ===
+EFI_STATUS AICorePhase730_FinalStateExporter(KERNEL_CONTEXT *ctx) {
+    Telemetry_LogEvent("AI730_Final", ctx->trust_score & 0xFF, ctx->entropy_usage_percent);
+    ctx->ai_status = 0;
+    return EFI_SUCCESS;
+}
+
+// === Phase 731: AIPolicyInfluenceBalancer ===
+EFI_STATUS AICorePhase731_PolicyInfluenceBalancer(KERNEL_CONTEXT *ctx) {
+    INT32 max = 0; INT32 sum = 0;
+    for (UINTN i = 0; i < 10; ++i) {
+        INT32 w = ctx->ai_rule_weights[i];
+        if (w < 0) w = -w;
+        if (w > max) max = w;
+        sum += w;
+    }
+    if (sum && max * 100 / sum > 60)
+        for (UINTN i = 0; i < 10; ++i)
+            ctx->ai_rule_weights[i] /= 2;
+    Telemetry_LogEvent("AI731_PolicyBal", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 732: AITrustRecoveryForecaster ===
+EFI_STATUS AICorePhase732_TrustRecoveryForecaster(KERNEL_CONTEXT *ctx) {
+    UINT64 baseline = ctx->ai_global_trust_score;
+    UINT64 diff = (baseline > ctx->trust_score) ? baseline - ctx->trust_score : 0;
+    ctx->ai_history[3] = diff / 2;
+    Telemetry_LogEvent("AI732_RecFore", (UINTN)ctx->ai_history[3], 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 733: AIEntropyTrustCorrelationScanner ===
+EFI_STATUS AICorePhase733_EntropyTrustCorrelationScanner(KERNEL_CONTEXT *ctx) {
+    UINT64 sumE = 0, sumT = 0;
+    for (UINTN i = 0; i < 16; ++i) sumE += ctx->ai_entropy_input[i];
+    for (UINTN i = 0; i < 10; ++i) sumT += ctx->phase_trust[i];
+    ctx->ai_state = (UINT8)((sumE && sumT) ? (sumE % sumT) : 0);
+    Telemetry_LogEvent("AI733_Corr", ctx->ai_state, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 734: AICoreAnomalyScoreEmitter ===
+EFI_STATUS AICorePhase734_AnomalyScoreEmitter(KERNEL_CONTEXT *ctx) {
+    UINT64 score = 0;
+    for (UINTN i = 0; i < 5; ++i)
+        score += (ctx->ai_history[i] == 0) ? 0 : 1;
+    ctx->ai_state = (UINT8)score;
+    Telemetry_LogEvent("AI734_Anom", (UINTN)score, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 735: AIEntropyInputCompressor ===
+EFI_STATUS AICorePhase735_EntropyInputCompressor(KERNEL_CONTEXT *ctx) {
+    UINT64 total = 0;
+    for (UINTN i = 0; i < 16; ++i) total += ctx->ai_entropy_input[i];
+    UINT64 avg = total / 16;
+    for (UINTN i = 0; i < 5; ++i) ctx->ai_entropy_input[i] = avg;
+    Telemetry_LogEvent("AI735_Compress", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 736: AITrustHistorySlopeTracker ===
+EFI_STATUS AICorePhase736_TrustSlopeTracker(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 20;
+    UINTN prev = (idx + 19) % 20;
+    INT64 diff = (INT64)ctx->phase_trust[idx] - (INT64)ctx->phase_trust[prev];
+    if (diff > 0) ctx->ai_state = 1; else if (diff < 0) ctx->ai_state = 2; else ctx->ai_state = 0;
+    Telemetry_LogEvent("AI736_Slope", ctx->ai_state, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 737: AIEntropyHistoryCleaner ===
+EFI_STATUS AICorePhase737_EntropyHistoryCleaner(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 10; i < 20; ++i) ctx->phase_entropy[i] = 0;
+    Telemetry_LogEvent("AI737_Clean", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 738: AICoreLatencyImpactEstimator ===
+EFI_STATUS AICorePhase738_LatencyImpactEstimator(KERNEL_CONTEXT *ctx) {
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < 10; ++i) sum += ctx->cpu_elapsed_tsc[i];
+    if (sum > ctx->avg_latency * 10)
+        Telemetry_LogEvent("AI738_LatRisk", 1, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 739: AIPredictiveThermalAdjuster ===
+EFI_STATUS AICorePhase739_ThermalAdjuster(KERNEL_CONTEXT *ctx) {
+    ctx->thermal_advisory = (ctx->entropy_gap > 10) ? 1 : 0;
+    Telemetry_LogEvent("AI739_Therm", ctx->thermal_advisory, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 740: AIEnergyEfficiencyEvaluator ===
+EFI_STATUS AICorePhase740_EnergyEfficiencyEvaluator(KERNEL_CONTEXT *ctx) {
+    UINT64 energy = ctx->cpu_elapsed_tsc[0];
+    UINT64 gain = ctx->trust_score - ctx->ai_global_trust_score;
+    ctx->ai_effectiveness = (gain) ? energy / (gain + 1) : energy;
+    Telemetry_LogEvent("AI740_Energy", (UINTN)ctx->ai_effectiveness, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 741: AICoreTrustWaveGenerator ===
+EFI_STATUS AICorePhase741_TrustWaveGenerator(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 10; ++i)
+        ctx->ai_history[30 + i] = ctx->trust_score + i;
+    Telemetry_LogEvent("AI741_Wave", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 742: AICoreGlobalSyncEnabler ===
+EFI_STATUS AICorePhase742_GlobalSyncEnabler(KERNEL_CONTEXT *ctx) {
+    Telemetry_LogEvent("AI742_Sync", ctx->ai_status, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 743: AITrustLocalMinimaDetector ===
+EFI_STATUS AICorePhase743_LocalMinimaDetector(KERNEL_CONTEXT *ctx) {
+    UINTN stagnant = 1;
+    UINT64 ref = ctx->phase_trust[0];
+    for (UINTN i = 1; i < 20; ++i)
+        if (ctx->phase_trust[i] != ref) { stagnant = 0; break; }
+    if (stagnant)
+        Telemetry_LogEvent("AI743_Stall", 1, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 744: AICoreResilienceFactorCalculator ===
+EFI_STATUS AICorePhase744_ResilienceCalculator(KERNEL_CONTEXT *ctx) {
+    UINTN score = 100;
+    if (ctx->EntropyScore < 10 && ctx->trust_score < 50)
+        score = 50;
+    ctx->ai_history[40] = score;
+    Telemetry_LogEvent("AI744_Res", score, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 745: AIEntropyCyclePredictor ===
+EFI_STATUS AICorePhase745_EntropyCyclePredictor(KERNEL_CONTEXT *ctx) {
+    ctx->ai_history[41] = ctx->EntropyScore % 100;
+    Telemetry_LogEvent("AI745_Cycle", (UINTN)ctx->ai_history[41], 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 746: AICorePredictiveActionAdvisor ===
+EFI_STATUS AICorePhase746_ActionAdvisor(KERNEL_CONTEXT *ctx) {
+    UINT8 adv = 0;
+    if (ctx->entropy_usage_percent > 90) adv = 1;
+    else if (ctx->trust_score < 50) adv = 2;
+    ctx->ai_history[42] = adv;
+    Telemetry_LogEvent("AI746_Adv", adv, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 747: AICoreIntegrityHashEmitter ===
+EFI_STATUS AICorePhase747_IntegrityHashEmitter(KERNEL_CONTEXT *ctx) {
+    SHA256_CTX c;
+    sha256_init(&c);
+    sha256_update(&c, (UINT8*)ctx->ai_entropy_input, sizeof(ctx->ai_entropy_input));
+    sha256_update(&c, (UINT8*)ctx->ai_trust_matrix, sizeof(ctx->ai_trust_matrix));
+    sha256_final(&c, ctx->ai_advisory_signature);
+    Telemetry_LogEvent("AI747_Hash", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 748: AICoreFinalTrustAlignmentCheck ===
+EFI_STATUS AICorePhase748_TrustAlignmentCheck(KERNEL_CONTEXT *ctx) {
+    UINT64 trend = ctx->ai_history[42];
+    if (trend < 95)
+        ctx->ai_alignment_confirmed = FALSE;
+    else
+        ctx->ai_alignment_confirmed = TRUE;
+    Telemetry_LogEvent("AI748_Align", ctx->ai_alignment_confirmed, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 749: AICoreShutdownEntropyReducer ===
+EFI_STATUS AICorePhase749_ShutdownEntropyReducer(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 16; ++i)
+        ctx->ai_entropy_input[i] /= 2;
+    Telemetry_LogEvent("AI749_Reduce", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 750: AICoreFinalHeartbeatEmission ===
+EFI_STATUS AICorePhase750_FinalHeartbeatEmission(KERNEL_CONTEXT *ctx) {
+    Telemetry_LogEvent("AI750_Heartbeat", ctx->ai_finalized, ctx->entropy_usage_percent);
+    ZeroMem(gPredictionBuf, sizeof(gPredictionBuf));
+    return EFI_SUCCESS;
 }
 
 // === Phase 861: BootstrapAICore ===
