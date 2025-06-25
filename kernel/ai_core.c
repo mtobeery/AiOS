@@ -1582,3 +1582,117 @@ EFI_STATUS AICore_RunAllPhases(KERNEL_CONTEXT *ctx) {
     return EFI_SUCCESS;
 }
 
+// === Phase 4051: ReflectKernelSelf ===
+EFI_STATUS AICore_Phase4051_Execute(KERNEL_CONTEXT *ctx) {
+    if (!ctx) return EFI_INVALID_PARAMETER;
+    SHA256_CTX c;
+    UINT8 hash[32];
+    sha256_init(&c);
+    sha256_update(&c, (UINT8*)gAiMatrix, sizeof(gAiMatrix));
+    sha256_update(&c, (UINT8*)gSelfModel, sizeof(gSelfModel));
+    sha256_final(&c, hash);
+    CopyMem(ctx->ai_advisory_signature, hash, sizeof(hash));
+    Telemetry_LogEvent("AI4051_Reflect", *(UINTN*)hash, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4052: ReportEntropyVector ===
+EFI_STATUS AICore_Phase4052_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 last = 0;
+    UINT64 cur = ctx->EntropyScore;
+    UINT64 var = (cur > last) ? (cur - last) : (last - cur);
+    last = cur;
+    gPredictionBuf[gReplayHead % 64] = var;
+    Telemetry_LogEvent("AI4052_Entropy", (UINTN)var, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4053: GenerateTrustAnchor ===
+EFI_STATUS AICore_Phase4053_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 nonce = AsmReadTsc();
+    SHA256_CTX c;
+    UINT8 hash[32];
+    sha256_init(&c);
+    sha256_update(&c, (UINT8*)&nonce, sizeof(nonce));
+    sha256_update(&c, ctx->ai_advisory_signature, sizeof(ctx->ai_advisory_signature));
+    sha256_final(&c, hash);
+    CopyMem(ctx->trust_anchor, hash, sizeof(ctx->trust_anchor));
+    Telemetry_LogEvent("AI4053_Trust", (UINTN)nonce, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4054: SummonMicroAgentPulse ===
+static UINT64 PingMicroAgent(UINTN id) { return AsmReadTsc() ^ id; }
+EFI_STATUS AICore_Phase4054_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 3; ++i) {
+        UINT64 start = AsmReadTsc();
+        UINT64 resp = PingMicroAgent(i);
+        UINT64 delta = AsmReadTsc() - start;
+        ctx->ai_history[i] = delta;
+        ctx->trust_recovery_map[i] = resp;
+    }
+    Telemetry_LogEvent("AI4054_Pulse", (UINTN)ctx->ai_history[0], (UINTN)ctx->trust_recovery_map[0]);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4055: AlignFrameClock ===
+EFI_STATUS AICore_Phase4055_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 tsc = AsmReadTsc();
+    UINT64 frame = tsc % 120;
+    ctx->ai_history[10] = frame;
+    Telemetry_LogEvent("AI4055_Clock", (UINTN)frame, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4056: ForecastPhaseLatency ===
+EFI_STATUS AICore_Phase4056_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < 10; ++i)
+        sum += ctx->cpu_elapsed_tsc[i];
+    UINT64 avg = sum / 10;
+    ctx->ai_history[20] = avg;
+    Telemetry_LogEvent("AI4056_LatFc", (UINTN)avg, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4057: UpdateMetaSignature ===
+EFI_STATUS AICore_Phase4057_Execute(KERNEL_CONTEXT *ctx) {
+    SHA256_CTX c;
+    UINT8 hash[32];
+    sha256_init(&c);
+    sha256_update(&c, (UINT8*)&ctx->trust_score, sizeof(ctx->trust_score));
+    sha256_update(&c, (UINT8*)&ctx->EntropyScore, sizeof(ctx->EntropyScore));
+    sha256_update(&c, (UINT8*)&ctx->total_phases, sizeof(ctx->total_phases));
+    sha256_update(&c, (UINT8*)ctx->memory_elapsed_tsc, sizeof(ctx->memory_elapsed_tsc));
+    sha256_final(&c, hash);
+    CopyMem(ctx->ai_advisory_signature, hash, sizeof(ctx->ai_advisory_signature));
+    Telemetry_LogEvent("AI4057_Meta", *(UINTN*)hash, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4058: BootIntentTracer ===
+EFI_STATUS AICore_Phase4058_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 4; ++i)
+        Telemetry_LogEvent("AI4058_Intent", (UINTN)ctx->boot_dna_trust[i], i);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4059: ReinforceLastTrustPath ===
+EFI_STATUS AICore_Phase4059_Execute(KERNEL_CONTEXT *ctx) {
+    if (ctx->ai_finalized)
+        ctx->trust_score++;
+    Telemetry_LogEvent("AI4059_Reinforce", (UINTN)ctx->trust_score, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4060: TraceUserCausality ===
+EFI_STATUS AICore_Phase4060_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 20;
+    UINT64 cur = ctx->phase_latency[idx];
+    UINT64 prev = ctx->phase_latency[(idx + 19) % 20];
+    UINT64 delta = (cur > prev) ? (cur - prev) : (prev - cur);
+    Telemetry_LogEvent("AI4060_Causal", (UINTN)delta, idx);
+    return EFI_SUCCESS;
+}
+
+
