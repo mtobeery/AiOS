@@ -1583,3 +1583,320 @@ EFI_STATUS Trust_InitPhase860_WriteUniversalRootTrustAnchor(KERNEL_CONTEXT *ctx)
     Telemetry_LogEvent("WriteURTA", (UINTN)gTrustScore, 0);
     return EFI_SUCCESS;
 }
+
+// === Phase 4151: EvaluatePhaseTrustSlope ===
+EFI_STATUS TrustMind_Phase4151_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index;
+    for (UINTN i = 0; i < 20; ++i) {
+        UINTN cur = (idx + 20 - i) % 20;
+        UINTN prev = (cur + 19) % 20;
+        ctx->trust_slope_buffer[i] = (INT64)ctx->phase_trust[cur] - (INT64)ctx->phase_trust[prev];
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4152: TrustRecoveryDampener ===
+EFI_STATUS TrustMind_Phase4152_Execute(KERNEL_CONTEXT *ctx) {
+    static UINTN post_fail = 0;
+    if (ctx->MissCount)
+        post_fail = 0;
+    else if (post_fail < 4)
+        post_fail++;
+    if (post_fail <= 3 && gPrevTrust) {
+        INT64 delta = (INT64)ctx->trust_score - (INT64)gPrevTrust;
+        if (delta > (INT64)(gPrevTrust * 30 / 100))
+            ctx->trust_score = gPrevTrust + delta / 2;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4153: LogTrustPredictionMisses ===
+EFI_STATUS TrustMind_Phase4153_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index % 32;
+    UINT64 pred = ctx->ai_prediction_cache[idx];
+    UINT64 actual = ctx->trust_score;
+    UINT64 diff = (actual > pred) ? actual - pred : pred - actual;
+    if (diff > 15)
+        Telemetry_LogEvent("trust_miss", (UINTN)diff, idx);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4154: TrustEntropyHarmonicsScan ===
+EFI_STATUS TrustMind_Phase4154_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index;
+    INT64 sum = 0;
+    for (UINTN i = 1; i < 5; ++i) {
+        INT64 de = (INT64)ctx->phase_entropy[(idx + 20 - i) % 20] - (INT64)ctx->phase_entropy[(idx + 19 - i) % 20];
+        INT64 dt = (INT64)ctx->phase_trust[(idx + 20 - i) % 20] - (INT64)ctx->phase_trust[(idx + 19 - i) % 20];
+        sum += de * dt;
+    }
+    Telemetry_LogEvent("Harmonics", (UINTN)(llabs(sum) % 100), 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4155: CoreTrustConsolidator ===
+EFI_STATUS TrustMind_Phase4155_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < THREAD_COUNT; ++i)
+        sum += gThreadTrust[i];
+    UINT64 avg = sum / THREAD_COUNT;
+    UINT64 weight = 100 - (ctx->entropy_slope_buffer[0] % 100);
+    ctx->kernel_trust_score = (avg * weight) / 100;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4156: PredictiveTrustDecayModel ===
+EFI_STATUS TrustMind_Phase4156_Execute(KERNEL_CONTEXT *ctx) {
+    INT64 ent = (INT64)ctx->entropy_slope_buffer[0];
+    INT64 lat = (INT64)ctx->phase_latency[ctx->phase_history_index % 20] - (INT64)ctx->phase_latency[(ctx->phase_history_index + 19) % 20];
+    if (ent + lat < -10) {
+        UINT64 dec = ctx->trust_score * 3 / 100;
+        if (ctx->trust_score > dec)
+            ctx->trust_score -= dec;
+        else
+            ctx->trust_score = 0;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4157: EnforceMinimumTrustBarrier ===
+EFI_STATUS TrustMind_Phase4157_Execute(KERNEL_CONTEXT *ctx) {
+    if (ctx->trust_score < ctx->trust_floor) {
+        ctx->trust_score = ctx->trust_floor;
+        Telemetry_LogEvent("TrustFloor", (UINTN)ctx->trust_floor, 0);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4158: UpdateTrustHeatMap ===
+EFI_STATUS TrustMind_Phase4158_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN row = ctx->phase_history_index % 10;
+    UINTN col = ctx->trust_score / 10;
+    if (col > 9) col = 9;
+    ctx->trust_heatmap[row * 10 + col]++;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4159: DetectCrossPhaseTrustAnomalies ===
+EFI_STATUS TrustMind_Phase4159_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index;
+    UINTN fails = 0;
+    for (UINTN i = 0; i < 3; ++i) {
+        UINTN p = (idx + 20 - 1 - i) % CPU_PHASE_COUNT;
+        if (ctx->cpu_missed[p] || ctx->memory_missed[p])
+            fails++;
+    }
+    if (ctx->phase_trust[(idx + 19) % 20] > 90 && fails >= 3)
+        Telemetry_LogEvent("TrustMisclass", idx, fails);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4160: RebalancePhaseTrustWeights ===
+EFI_STATUS TrustMind_Phase4160_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN succ = 0, total = 0;
+    for (UINTN i = 0; i < 50 && i < ctx->phase_history_index; ++i) {
+        UINTN p = (ctx->phase_history_index + 50 - 1 - i) % CPU_PHASE_COUNT;
+        if (ctx->cpu_missed[p] == 0) succ++;
+        total++;
+    }
+    if (total)
+        ctx->ai_scheduler_weight = (succ * 100) / total;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4161: TrustCurveSmoothing ===
+EFI_STATUS TrustMind_Phase4161_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 20; ++i) {
+        UINT64 sum = 0; UINTN count = 0;
+        for (INTN j = -3; j <= 3; ++j) {
+            UINTN k = (i + j + 20) % 20;
+            sum += ctx->phase_trust[k];
+            count++;
+        }
+        ctx->trust_smoothed[i] = sum / count;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4162: TrustReactionAnalyzer ===
+EFI_STATUS TrustMind_Phase4162_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 dt = AsmReadTsc() - ctx->cpu_elapsed_tsc[0];
+    INT64 dtrust = (INT64)ctx->trust_score - (INT64)gPrevTrust;
+    if (dt)
+        Telemetry_LogEvent("TrustReact", (UINTN)(dtrust / (INT64)dt), 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4163: PhaseTrustPriorityWeaver ===
+EFI_STATUS TrustMind_Phase4163_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 delta = (ctx->EntropyScore > ctx->phase_entropy[(ctx->phase_history_index + 19) % 20]) ?
+                    ctx->EntropyScore - ctx->phase_entropy[(ctx->phase_history_index + 19) % 20] :
+                    ctx->phase_entropy[(ctx->phase_history_index + 19) % 20] - ctx->EntropyScore;
+    ctx->ai_scheduler_weight = ctx->trust_score * delta;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4164: TrustBackpressureLimiter ===
+EFI_STATUS TrustMind_Phase4164_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN util = ctx->cpu_load_map[ctx->hotspot_cpu];
+    if (util > 90 || ctx->io_queue_stall[0] > 5) {
+        UINT64 cap = gPrevTrust + gPrevTrust * 2 / 100;
+        if (ctx->trust_score > cap)
+            ctx->trust_score = cap;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4165: TrustMissImpactScorer ===
+EFI_STATUS TrustMind_Phase4165_Execute(KERNEL_CONTEXT *ctx) {
+    ctx->trust_damage_index += ctx->MissCount * 5;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4166: AgentTrustDeltaLogger ===
+EFI_STATUS TrustMind_Phase4166_Execute(KERNEL_CONTEXT *ctx) {
+    static INT64 pa=0, pg=0, ps=0, pm=0;
+    INT64 da = (INT64)ctx->ai_global_trust_score - pa;
+    INT64 dg = (INT64)(ctx->ai_gpu_delegate_ready ? 100 : 50) - pg;
+    INT64 ds = (INT64)ctx->kernel_trust_score - ps;
+    INT64 dm = (INT64)ctx->memory_missed[0] - pm;
+    Telemetry_LogEvent("TrustDeltaMatrix", (UINTN)(da+ds), (UINTN)(dg+dm));
+    pa = ctx->ai_global_trust_score; pg = ctx->ai_gpu_delegate_ready ? 100 : 50; ps = ctx->kernel_trust_score; pm = ctx->memory_missed[0];
+    return EFI_SUCCESS;
+}
+
+// === Phase 4167: TrustRestorationForecast ===
+EFI_STATUS TrustMind_Phase4167_Execute(KERNEL_CONTEXT *ctx) {
+    static INT64 hist[5]; static UINTN hidx = 0;
+    hist[hidx % 5] = (INT64)ctx->trust_score - (INT64)gPrevTrust;
+    hidx++;
+    INT64 sum = 0; UINTN count = (hidx < 5) ? hidx : 5;
+    for (UINTN i = 0; i < count; ++i) sum += hist[i];
+    INT64 avg = count ? sum / (INT64)count : 0;
+    if (avg > 0) {
+        UINT64 eta = (100 - ctx->trust_score) / avg;
+        ctx->ai_prediction_cache[1] = eta;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4168: BroadcastTrustUpdate ===
+EFI_STATUS TrustMind_Phase4168_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < sizeof(ctx->shared_trust_cache)/sizeof(UINT64); ++i)
+        ctx->shared_trust_cache[i] = ctx->trust_score;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4169: LogTrustEntropyGradient ===
+EFI_STATUS TrustMind_Phase4169_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->phase_history_index;
+    UINT64 t_now = ctx->phase_trust[(idx + 19) % 20];
+    UINT64 t_prev = ctx->phase_trust[(idx + 20 - 16) % 20];
+    INT64 dt = (INT64)t_now - (INT64)t_prev;
+    INT64 de = (INT64)ctx->phase_entropy[(idx + 19) % 20] - (INT64)ctx->phase_entropy[(idx + 20 - 16) % 20];
+    INT64 grad = (de != 0) ? (dt * 100 / de) : 0;
+    Telemetry_LogEvent("TrustEntropyGrad", (UINTN)grad, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4170: TrustThresholdModulator ===
+EFI_STATUS TrustMind_Phase4170_Execute(KERNEL_CONTEXT *ctx) {
+    if (ctx->trust_alarm_active || ctx->scheduler_pressure_mode)
+        ctx->trust_floor = ctx->trust_floor * 9 / 10;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4171: TrustMapConsolidator ===
+EFI_STATUS TrustMind_Phase4171_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN r = 0; r < 10; ++r)
+        for (UINTN c = 0; c < 10; ++c)
+            ctx->ai_trust_matrix[r][c] = ctx->phase_trust[(ctx->phase_history_index + 20 - 1 - ((r*10+c)%20)) % 20];
+    return EFI_SUCCESS;
+}
+
+// === Phase 4172: FlagTrustDesync ===
+EFI_STATUS TrustMind_Phase4172_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 gpu = gModuleTrust[1];
+    UINT64 cpu = gModuleTrust[0];
+    if ((gpu > cpu && gpu - cpu > 25) || (cpu > gpu && cpu - gpu > 25))
+        Telemetry_LogEvent("TrustDesync", (UINTN)gpu, (UINTN)cpu);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4173: SnapshotTrustChain ===
+EFI_STATUS TrustMind_Phase4173_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN idx = ctx->snapshot_index % 64;
+    ctx->snapshot_buffer[idx].core_id = ctx->hotspot_cpu;
+    ctx->snapshot_buffer[idx].task_id = ctx->phase_history_index;
+    ctx->snapshot_buffer[idx].trust = ctx->trust_score;
+    ctx->snapshot_buffer[idx].latency = ctx->avg_latency;
+    ctx->snapshot_index++;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4174: CompressTrustLog ===
+EFI_STATUS TrustMind_Phase4174_Execute(KERNEL_CONTEXT *ctx) {
+    for (INTN i = TRUST_RING_SIZE - 1; i > 0; --i)
+        gTrustRing[i] = gTrustRing[i] - gTrustRing[i-1];
+    return EFI_SUCCESS;
+}
+
+// === Phase 4175: DetectTrustLoop ===
+EFI_STATUS TrustMind_Phase4175_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN loops = 0;
+    for (UINTN i = 2; i < 20; ++i) {
+        INT64 d1 = (INT64)ctx->phase_trust[(i)%20] - (INT64)ctx->phase_trust[(i-1)%20];
+        INT64 d2 = (INT64)ctx->phase_trust[(i-2)%20] - (INT64)ctx->phase_trust[(i-3)%20];
+        if (d1 == d2) loops++;
+    }
+    if (loops > 5)
+        Telemetry_LogEvent("TrustLoop", loops, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4176: NormalizeTrustGradient ===
+EFI_STATUS TrustMind_Phase4176_Execute(KERNEL_CONTEXT *ctx) {
+    INT64 maxv = 1;
+    for (UINTN i = 0; i < 20; ++i) {
+        INT64 d = ctx->trust_slope_buffer[i];
+        if (llabs(d) > maxv) maxv = llabs(d);
+    }
+    for (UINTN i = 0; i < 20; ++i)
+        ctx->trust_normalized[i] = ((UINT64)(ctx->trust_slope_buffer[i] + maxv) / (2 * maxv));
+    return EFI_SUCCESS;
+}
+
+// === Phase 4177: PredictTrustRecoveryWindow ===
+EFI_STATUS TrustMind_Phase4177_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 eta = ctx->ai_prediction_cache[1];
+    Telemetry_LogEvent("TrustETA", (UINTN)eta, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4178: LockTrustUnderCriticalLoad ===
+EFI_STATUS TrustMind_Phase4178_Execute(KERNEL_CONTEXT *ctx) {
+    static UINTN heavy = 0;
+    if (ctx->cpu_load_map[ctx->hotspot_cpu] > 95)
+        heavy++;
+    else
+        heavy = 0;
+    if (heavy >= 3)
+        gTrustFrozen = TRUE;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4179: TrustTrustFeedbackEvaluator ===
+EFI_STATUS TrustMind_Phase4179_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN ack = 0;
+    if (ctx->ai_core_block_b_ready) ack++;
+    if (ctx->ai_gpu_delegate_ready) ack++;
+    if (ctx->memory_trust_sync) ack++;
+    ctx->meta_trust_score += ack;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4180: IntegrateTrustIntoEntropyModel ===
+EFI_STATUS TrustMind_Phase4180_Execute(KERNEL_CONTEXT *ctx) {
+    ctx->entropy_slope_buffer[0] = (ctx->entropy_slope_buffer[0] * 9 + ctx->trust_score) / 10;
+    return EFI_SUCCESS;
+}

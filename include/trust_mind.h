@@ -64,4 +64,35 @@ EFI_STATUS Trust_InitPhase858_AITrustSealRegistrar(KERNEL_CONTEXT *ctx);
 EFI_STATUS Trust_InitPhase859_KernelTrustScoreExporterToDisplayCore(KERNEL_CONTEXT *ctx);
 EFI_STATUS Trust_InitPhase860_WriteUniversalRootTrustAnchor(KERNEL_CONTEXT *ctx);
 
+EFI_STATUS TrustMind_Phase4151_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4152_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4153_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4154_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4155_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4156_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4157_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4158_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4159_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4160_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4161_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4162_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4163_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4164_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4165_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4166_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4167_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4168_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4169_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4170_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4171_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4172_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4173_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4174_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4175_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4176_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4177_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4178_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4179_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS TrustMind_Phase4180_Execute(KERNEL_CONTEXT *ctx);
+
 #endif // TRUST_MIND_H
