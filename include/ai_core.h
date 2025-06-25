@@ -7,6 +7,8 @@
 EFI_STATUS AICore_ReportEvent(const CHAR8 *name);
 EFI_STATUS AICore_ReportPhase(const CHAR8 *name, UINTN value);
 EFI_STATUS AICore_RecordPhase(const CHAR8 *name, UINTN phase, UINTN value);
+EFI_STATUS AICore_EmitTrust(UINTN phase, UINT64 trust);
+EFI_STATUS AICore_EmitEntropy(UINTN phase, UINT64 entropy);
 UINTN* AICore_SelectTopTasks(UINTN count);
 EFI_STATUS AICore_PredictBurstLoad(UINTN *prob);
 EFI_STATUS AICore_AttachToBootDNA(const CHAR8 *module, UINT64 trust);
@@ -177,6 +179,36 @@ EFI_STATUS AICore_InitPhase957_AIKernelAdvisoryBridgeLogger(KERNEL_CONTEXT *ctx)
 EFI_STATUS AICore_InitPhase958_AIZeroDriftPhaseVerifier(KERNEL_CONTEXT *ctx);
 EFI_STATUS AICore_InitPhase959_RealTimePredictionDropMonitor(KERNEL_CONTEXT *ctx);
 EFI_STATUS AICore_InitPhase960_FinalizeAIBlockC(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase961_TrustForecastEntropyBalancer(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase962_NextPhaseImpactForecaster(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase963_EntropySpikePreventionAgent(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase964_ConfidenceFlowSmoother(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase965_AIRewardLearningRefiner(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase966_AIResonanceProfileEmitter(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase967_AIKernelIntentMirror(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase968_AIResolutionCurveAdjuster(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase969_AILatencyDriftEqualizer(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase970_AITrustEntropyFusionPlotter(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase971_AIThreadForecastAligner(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase972_TrustPredictionNoiseFilter(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase973_AIActionCoherenceChecker(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase974_AIMisfireQuarantineTrigger(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase975_AITrustSlopeRegulator(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase976_AIPhaseEntropyTimer(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase977_AIRealTimeSurgeLimiter(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase978_AIPriorityDecayBalancer(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase979_AIIntuitionFeedbackIntegrator(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase980_AIBlockD_Finalizer(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase981_AIKernelPlanningAgent(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase982_AINarrativeCurveGenerator(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase983_AIPlanIntentSynchronizer(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase984_AIThreatAnticipationMap(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase985_AIFailureBubbleForecaster(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase986_AIFutureActionHeatmapEmitter(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase987_AIPlanTrustDeflectionModel(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase988_AIKernelTrustNegotiator(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase989_AIPlanEntropyThrottler(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_InitPhase990_AIFederatedSyncChannelHandler(KERNEL_CONTEXT *ctx);
 EFI_STATUS AICore_RunAllPhases(KERNEL_CONTEXT *ctx);
 
 #endif // AI_CORE_H
