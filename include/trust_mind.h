@@ -9,6 +9,8 @@ UINT64 Trust_GetCurrentScore(void);
 void Trust_AdjustScore(UINTN id, INTN delta);
 void Trust_Transfer(UINTN from, UINTN to, UINTN amount);
 
+EFI_STATUS TrustPhase_Execute(KERNEL_CONTEXT *ctx, UINTN phase);
+
 EFI_STATUS Trust_InitPhase761_BootstrapTrustMind(KERNEL_CONTEXT *ctx);
 EFI_STATUS Trust_InitPhase767_TrustCollapsePreventer(KERNEL_CONTEXT *ctx);
 EFI_STATUS Trust_InitPhase811_EntropyWeightedTrustForecaster(KERNEL_CONTEXT *ctx);
