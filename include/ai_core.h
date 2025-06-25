@@ -177,6 +177,16 @@ EFI_STATUS AICore_InitPhase957_AIKernelAdvisoryBridgeLogger(KERNEL_CONTEXT *ctx)
 EFI_STATUS AICore_InitPhase958_AIZeroDriftPhaseVerifier(KERNEL_CONTEXT *ctx);
 EFI_STATUS AICore_InitPhase959_RealTimePredictionDropMonitor(KERNEL_CONTEXT *ctx);
 EFI_STATUS AICore_InitPhase960_FinalizeAIBlockC(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4051_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4052_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4053_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4054_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4055_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4056_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4057_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4058_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4059_Execute(KERNEL_CONTEXT *ctx);
+EFI_STATUS AICore_Phase4060_Execute(KERNEL_CONTEXT *ctx);
 EFI_STATUS AICore_RunAllPhases(KERNEL_CONTEXT *ctx);
 
 #endif // AI_CORE_H
