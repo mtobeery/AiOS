@@ -1,11 +1,9 @@
 // scheduler_mind.c - AiOS Scheduler Mind (Phases 451-500)
 
 #include "kernel_shared.h"
+#include "trust_mind.h"
 
 // Forward declarations for external subsystems
-EFI_STATUS Trust_Reset(void);
-UINT64 Trust_GetCurrentScore(void);
-void Trust_AdjustScore(UINTN id, INTN delta);
 void Telemetry_LogEvent(const CHAR8 *name, UINTN a, UINTN b);
 void AICore_RecordPhase(const CHAR8 *name, UINTN phase, UINTN value);
 void AICore_ReportPhase(const CHAR8 *name, UINTN value);
