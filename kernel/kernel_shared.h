@@ -120,6 +120,10 @@ typedef struct {
     UINT8   ai_advisory_signature[32];
     UINT8   ai_state;
     BOOLEAN ai_finalized;
+    INT64   ai_reward_delta;
+    UINT64  ai_plan_shortterm[10];
+    BOOLEAN ai_block_d_ready;
+    BOOLEAN ai_ready;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H

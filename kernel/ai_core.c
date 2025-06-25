@@ -34,6 +34,16 @@ EFI_STATUS AICore_RecordPhase(const CHAR8 *name, UINTN phase, UINTN value) {
     return EFI_SUCCESS;
 }
 
+EFI_STATUS AICore_EmitTrust(UINTN phase, UINT64 trust) {
+    Telemetry_LogEvent("AICoreTrust", phase, (UINTN)trust);
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS AICore_EmitEntropy(UINTN phase, UINT64 entropy) {
+    Telemetry_LogEvent("AICoreEntropy", phase, (UINTN)entropy);
+    return EFI_SUCCESS;
+}
+
 UINTN* AICore_SelectTopTasks(UINTN count) {
     static UINTN tasks[8];
     for (UINTN i = 0; i < 8 && i < count; ++i)
@@ -902,9 +912,349 @@ EFI_STATUS AICore_InitPhase960_FinalizeAIBlockC(KERNEL_CONTEXT *ctx) {
     return EFI_SUCCESS;
 }
 
+// === Phase 961: Trust Forecast Entropy Balancer ===
+EFI_STATUS AICore_InitPhase961_TrustForecastEntropyBalancer(KERNEL_CONTEXT *ctx) {
+    INT64 slope = (INT64)ctx->trust_score - (INT64)ctx->ai_global_trust_score;
+    for (UINTN i = 0; i < 4; ++i)
+        ctx->ai_entropy_vector[i] += slope / (INT64)(i + 1);
+    AICore_EmitTrust(961, ctx->trust_score);
+    AICore_EmitEntropy(961, ctx->ai_entropy_vector[0]);
+    AICore_RecordPhase("ai_core", 961, (UINTN)(slope & 0xFFFF));
+    return EFI_SUCCESS;
+}
+
+// === Phase 962: Next Phase Impact Forecaster ===
+EFI_STATUS AICore_InitPhase962_NextPhaseImpactForecaster(KERNEL_CONTEXT *ctx) {
+    UINT64 shift = 0;
+    for (UINTN i = 0; i < 3; ++i)
+        shift += ctx->phase_trust[(ctx->phase_history_index + i) % 20];
+    shift = (shift / 3) - ctx->ai_global_trust_score;
+    if (shift > 10)
+        ctx->scheduler_pressure_mode = TRUE;
+    Telemetry_LogEvent("NextImpact", (UINTN)shift, 0);
+    AICore_RecordPhase("ai_core", 962, (UINTN)shift);
+    return EFI_SUCCESS;
+}
+
+// === Phase 963: Entropy Spike Prevention Agent ===
+EFI_STATUS AICore_InitPhase963_EntropySpikePreventionAgent(KERNEL_CONTEXT *ctx) {
+    static UINTN intervention = 0;
+    INTN accel = (INTN)ctx->EntropyScore - gEntropyDelta[ctx->phase_history_index % 32];
+    if (accel > 20) {
+        ctx->EntropyScore -= accel / 2;
+        intervention++;
+    }
+    Telemetry_LogEvent("EntropySpike", accel, intervention);
+    AICore_RecordPhase("ai_core", 963, intervention);
+    return EFI_SUCCESS;
+}
+
+// === Phase 964: Confidence Flow Smoother ===
+EFI_STATUS AICore_InitPhase964_ConfidenceFlowSmoother(KERNEL_CONTEXT *ctx) {
+    UINT64 prev = ctx->ai_global_trust_score;
+    ctx->ai_global_trust_score = (ctx->ai_global_trust_score + ctx->trust_score) / 2;
+    if ((prev > ctx->ai_global_trust_score ? prev - ctx->ai_global_trust_score : ctx->ai_global_trust_score - prev) > 10)
+        ctx->ai_effectiveness /= 2;
+    Telemetry_LogEvent("ConfSmooth", (UINTN)ctx->ai_global_trust_score, 0);
+    AICore_RecordPhase("ai_core", 964, (UINTN)ctx->ai_global_trust_score);
+    return EFI_SUCCESS;
+}
+
+// === Phase 965: AI Reward Learning Refiner ===
+EFI_STATUS AICore_InitPhase965_AIRewardLearningRefiner(KERNEL_CONTEXT *ctx) {
+    UINTN success = 0;
+    for (UINTN i = 0; i < 30; ++i)
+        success += (gAdvisoryHistory[(gAdvisoryHead + 127 - i) % 128] & 1);
+    ctx->ai_reward_delta = (INT64)success - 15;
+    Telemetry_LogEvent("RewardRefine", success, (UINTN)ctx->ai_reward_delta);
+    AICore_RecordPhase("ai_core", 965, success);
+    return EFI_SUCCESS;
+}
+
+// === Phase 966: AI Resonance Profile Emitter ===
+EFI_STATUS AICore_InitPhase966_AIResonanceProfileEmitter(KERNEL_CONTEXT *ctx) {
+    UINT64 profile = 0;
+    for (UINTN i = 0; i < 5; ++i)
+        profile ^= gAdvisorLogRing[(gAdvisorLogHead + 63 - i) % 64];
+    Telemetry_LogEvent("ResonProfile", (UINTN)profile, 0);
+    AICore_RecordPhase("ai_core", 966, (UINTN)profile);
+    return EFI_SUCCESS;
+}
+
+// === Phase 967: AI Kernel Intent Mirror ===
+EFI_STATUS AICore_InitPhase967_AIKernelIntentMirror(KERNEL_CONTEXT *ctx) {
+    UINT64 actual = ctx->phase_history_index;
+    UINT64 predicted = gPredictionBuf[0];
+    UINT64 mismatch = (actual > predicted) ? actual - predicted : predicted - actual;
+    if (mismatch > actual / 10)
+        ctx->ai_global_trust_score -= 1;
+    ctx->intent_alignment_score = 100 - mismatch;
+    Telemetry_LogEvent("IntentMirror", (UINTN)mismatch, 0);
+    AICore_RecordPhase("ai_core", 967, (UINTN)mismatch);
+    return EFI_SUCCESS;
+}
+
+// === Phase 968: AI Resolution Curve Adjuster ===
+EFI_STATUS AICore_InitPhase968_AIResolutionCurveAdjuster(KERNEL_CONTEXT *ctx) {
+    if (ctx->entropy_stalling)
+        ctx->ai_scheduler_weight /= 2;
+    else
+        ctx->ai_scheduler_weight += 1;
+    Telemetry_LogEvent("ResCurveAdj", ctx->entropy_stalling, (UINTN)ctx->ai_scheduler_weight);
+    AICore_RecordPhase("ai_core", 968, (UINTN)ctx->ai_scheduler_weight);
+    return EFI_SUCCESS;
+}
+
+// === Phase 969: AI Latency Drift Equalizer ===
+EFI_STATUS AICore_InitPhase969_AILatencyDriftEqualizer(KERNEL_CONTEXT *ctx) {
+    UINT64 avg = 0;
+    for (UINTN i = 0; i < 20; ++i)
+        avg += ctx->cpu_elapsed_tsc[i];
+    avg /= 20;
+    if (avg > ctx->avg_latency * 12 / 10)
+        ctx->scheduler_pressure_mode = TRUE;
+    Telemetry_LogEvent("LatencyDrift", (UINTN)avg, (UINTN)ctx->avg_latency);
+    AICore_RecordPhase("ai_core", 969, (UINTN)avg);
+    return EFI_SUCCESS;
+}
+
+// === Phase 970: AI Trust Entropy Fusion Plotter ===
+EFI_STATUS AICore_InitPhase970_AITrustEntropyFusionPlotter(KERNEL_CONTEXT *ctx) {
+    UINT64 fusion = (ctx->trust_score & 0xFFFF) | ((ctx->EntropyScore & 0xFFFF) << 16);
+    Telemetry_LogEvent("FusionPlot", (UINTN)fusion, 0);
+    AICore_RecordPhase("ai_core", 970, (UINTN)fusion);
+    return EFI_SUCCESS;
+}
+
+// === Phase 971: AI Thread Forecast Aligner ===
+EFI_STATUS AICore_InitPhase971_AIThreadForecastAligner(KERNEL_CONTEXT *ctx) {
+    UINT64 align = 0;
+    for (UINTN i = 0; i < 4; ++i)
+        align += (ctx->scheduler_load_prediction[i] == ctx->cpu_load_map[i]);
+    ctx->ai_global_trust_score += align;
+    Telemetry_LogEvent("ThreadAlign", (UINTN)align, 0);
+    AICore_RecordPhase("ai_core", 971, (UINTN)align);
+    return EFI_SUCCESS;
+}
+
+// === Phase 972: Trust Prediction Noise Filter ===
+EFI_STATUS AICore_InitPhase972_TrustPredictionNoiseFilter(KERNEL_CONTEXT *ctx) {
+    UINTN filtered = 0;
+    for (UINTN i = 0; i < 16; ++i) {
+        if (gTrustInput[i] > 90 || gTrustInput[i] < 10) {
+            gTrustInput[i] = ctx->ai_global_trust_score & 0xFF;
+            filtered++;
+        }
+    }
+    Telemetry_LogEvent("TrustNoiseFilter", filtered, 0);
+    AICore_RecordPhase("ai_core", 972, filtered);
+    return EFI_SUCCESS;
+}
+
+// === Phase 973: AI Action Coherence Checker ===
+EFI_STATUS AICore_InitPhase973_AIActionCoherenceChecker(KERNEL_CONTEXT *ctx) {
+    UINT64 a0 = gAdvisorLogRing[(gAdvisorLogHead + 63) % 64];
+    UINT64 a1 = gAdvisorLogRing[(gAdvisorLogHead + 62) % 64];
+    UINT64 a2 = gAdvisorLogRing[(gAdvisorLogHead + 61) % 64];
+    UINT64 score = (a0 == a1) + (a1 == a2) + (a0 == a2);
+    if (score < 1)
+        ctx->ai_state |= 4;
+    Telemetry_LogEvent("ActionCoherence", (UINTN)score, 0);
+    AICore_RecordPhase("ai_core", 973, (UINTN)score);
+    return EFI_SUCCESS;
+}
+
+// === Phase 974: AI Misfire Quarantine Trigger ===
+EFI_STATUS AICore_InitPhase974_AIMisfireQuarantineTrigger(KERNEL_CONTEXT *ctx) {
+    UINT64 loss = (ctx->EntropyScore > gEntropyDelta[ctx->phase_history_index % 32]) ?
+                  ctx->EntropyScore - gEntropyDelta[ctx->phase_history_index % 32] : 0;
+    if (loss > (ctx->EntropyScore / 4))
+        ctx->ai_state |= 8;
+    Telemetry_LogEvent("MisfireQuarantine", (UINTN)loss, 0);
+    AICore_RecordPhase("ai_core", 974, (UINTN)loss);
+    return EFI_SUCCESS;
+}
+
+// === Phase 975: AI Trust Slope Regulator ===
+EFI_STATUS AICore_InitPhase975_AITrustSlopeRegulator(KERNEL_CONTEXT *ctx) {
+    static INTN last = 0;
+    INTN slope = (INTN)ctx->trust_score - last;
+    if (slope > 5)
+        ctx->trust_score -= slope / 2;
+    else if (slope < -5)
+        ctx->trust_score += (-slope) / 2;
+    last = ctx->trust_score;
+    Telemetry_LogEvent("TrustSlopeReg", slope, 0);
+    AICore_RecordPhase("ai_core", 975, (UINTN)(slope & 0xFFFF));
+    return EFI_SUCCESS;
+}
+
+// === Phase 976: AI Phase Entropy Timer ===
+EFI_STATUS AICore_InitPhase976_AIPhaseEntropyTimer(KERNEL_CONTEXT *ctx) {
+    static UINT64 last = 0;
+    UINTN idx = ctx->phase_history_index % 16;
+    UINT64 now = AsmReadTsc();
+    gPredictionBuf[idx] = now - last;
+    last = now;
+    Telemetry_LogEvent("EntropyTimer", idx, (UINTN)gPredictionBuf[idx]);
+    AICore_RecordPhase("ai_core", 976, idx);
+    return EFI_SUCCESS;
+}
+
+// === Phase 977: AI Real-Time Surge Limiter ===
+EFI_STATUS AICore_InitPhase977_AIRealTimeSurgeLimiter(KERNEL_CONTEXT *ctx) {
+    UINTN depth = ctx->io_queue_stall[0];
+    if (depth > 10) {
+        ctx->ai_state |= 32;
+        ctx->io_queue_stall[0]--;
+    }
+    Telemetry_LogEvent("SurgeLimit", depth, 0);
+    AICore_RecordPhase("ai_core", 977, depth);
+    return EFI_SUCCESS;
+}
+
+// === Phase 978: AI Priority Decay Balancer ===
+EFI_STATUS AICore_InitPhase978_AIPriorityDecayBalancer(KERNEL_CONTEXT *ctx) {
+    UINTN removed = 0;
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->cpu_load_map[i] < 3) {
+            ctx->cpu_load_map[i] = 0;
+            removed++;
+        }
+    }
+    Telemetry_LogEvent("PriorityDecay", removed, 0);
+    AICore_RecordPhase("ai_core", 978, removed);
+    return EFI_SUCCESS;
+}
+
+// === Phase 979: AI Intuition Feedback Integrator ===
+EFI_STATUS AICore_InitPhase979_AIIntuitionFeedbackIntegrator(KERNEL_CONTEXT *ctx) {
+    UINT64 slope = ctx->EntropyScore ^ ctx->trust_score;
+    if ((slope & 0xF) == 0xA)
+        ctx->ai_effectiveness += 1;
+    Telemetry_LogEvent("Intuition", (UINTN)slope, 0);
+    AICore_RecordPhase("ai_core", 979, (UINTN)slope);
+    return EFI_SUCCESS;
+}
+
+// === Phase 980: Finalize AI Block D ===
+EFI_STATUS AICore_InitPhase980_AIBlockD_Finalizer(KERNEL_CONTEXT *ctx) {
+    Telemetry_LogEvent("AIBlockD", 1, 0);
+    ctx->ai_block_d_ready = TRUE;
+    for (UINTN i = 961; i <= 979; ++i)
+        AICore_RecordPhase("ai_block_d", i, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 981: AI Kernel Planning Agent ===
+EFI_STATUS AICore_InitPhase981_AIKernelPlanningAgent(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 10; ++i)
+        ctx->ai_plan_shortterm[i] = ctx->EntropyScore + i;
+    Telemetry_LogEvent("KernelPlan", ctx->EntropyScore, 0);
+    AICore_RecordPhase("ai_core", 981, ctx->EntropyScore & 0xFF);
+    return EFI_SUCCESS;
+}
+
+// === Phase 982: AI Narrative Curve Generator ===
+EFI_STATUS AICore_InitPhase982_AINarrativeCurveGenerator(KERNEL_CONTEXT *ctx) {
+    UINT64 path = 0;
+    for (UINTN i = 0; i < 5; ++i)
+        path += ctx->phase_trust[i];
+    Telemetry_LogEvent("NarrativeCurve", (UINTN)path, 0);
+    AICore_RecordPhase("ai_core", 982, (UINTN)path);
+    return EFI_SUCCESS;
+}
+
+// === Phase 983: AI Plan-Intent Synchronizer ===
+EFI_STATUS AICore_InitPhase983_AIPlanIntentSynchronizer(KERNEL_CONTEXT *ctx) {
+    UINT64 deviation = 0;
+    for (UINTN i = 0; i < 10; ++i)
+        deviation += (ctx->boot_dna_trust[i] != ctx->ai_plan_shortterm[i]);
+    if (deviation > 2)
+        ctx->ai_state |= 64;
+    ctx->ai_intent_sync_score = 100 - deviation;
+    Telemetry_LogEvent("PlanIntentSync", (UINTN)deviation, 0);
+    AICore_RecordPhase("ai_core", 983, (UINTN)deviation);
+    return EFI_SUCCESS;
+}
+
+// === Phase 984: AI Threat Anticipation Map ===
+EFI_STATUS AICore_InitPhase984_AIThreatAnticipationMap(KERNEL_CONTEXT *ctx) {
+    UINT64 map = ctx->io_entropy_buffer[0] + ctx->io_entropy_buffer[1] + ctx->io_entropy_buffer[2];
+    if (map > 70)
+        ctx->scheduler_pressure_mode = TRUE;
+    Telemetry_LogEvent("ThreatMap", (UINTN)map, 0);
+    AICore_RecordPhase("ai_core", 984, (UINTN)map);
+    return EFI_SUCCESS;
+}
+
+// === Phase 985: AI Failure Bubble Forecaster ===
+EFI_STATUS AICore_InitPhase985_AIFailureBubbleForecaster(KERNEL_CONTEXT *ctx) {
+    UINTN bubble = 0;
+    for (UINTN i = 0; i < 5; ++i)
+        bubble += (gEntropyDelta[(ctx->phase_history_index + i) % 32] < 0);
+    if (bubble >= 3)
+        ctx->ai_state |= 128;
+    Telemetry_LogEvent("FailureBubble", bubble, 0);
+    AICore_RecordPhase("ai_core", 985, bubble);
+    return EFI_SUCCESS;
+}
+
+// === Phase 986: AI Future Action Heatmap Emitter ===
+EFI_STATUS AICore_InitPhase986_AIFutureActionHeatmapEmitter(KERNEL_CONTEXT *ctx) {
+    UINT64 map = ctx->EntropyScore ^ ctx->trust_score;
+    Telemetry_LogEvent("FutureHeat", (UINTN)map, 0);
+    AICore_RecordPhase("ai_core", 986, (UINTN)map);
+    return EFI_SUCCESS;
+}
+
+// === Phase 987: AI Plan Trust Deflection Model ===
+EFI_STATUS AICore_InitPhase987_AIPlanTrustDeflectionModel(KERNEL_CONTEXT *ctx) {
+    INT64 trust_future = (INT64)ctx->trust_score - (INT64)ctx->EntropyScore;
+    if (trust_future < -10)
+        ctx->ai_plan_shortterm[0] ^= 1;
+    Telemetry_LogEvent("TrustDeflect", (UINTN)trust_future, 0);
+    AICore_RecordPhase("ai_core", 987, (UINTN)(trust_future & 0xFFFF));
+    return EFI_SUCCESS;
+}
+
+// === Phase 988: AI Kernel Trust Negotiator ===
+EFI_STATUS AICore_InitPhase988_AIKernelTrustNegotiator(KERNEL_CONTEXT *ctx) {
+    UINTN agree = 0;
+    for (UINTN i = 0; i < 3; ++i)
+        if (ctx->io_trust_map[i] > 50)
+            agree++;
+    if (agree >= 2)
+        ctx->ai_global_trust_score += agree;
+    Telemetry_LogEvent("TrustNegotiate", agree, 0);
+    AICore_RecordPhase("ai_core", 988, agree);
+    return EFI_SUCCESS;
+}
+
+// === Phase 989: AI Plan Entropy Throttler ===
+EFI_STATUS AICore_InitPhase989_AIPlanEntropyThrottler(KERNEL_CONTEXT *ctx) {
+    INT64 cost = 0;
+    for (UINTN i = 0; i < 30; ++i)
+        cost += gEntropyDelta[i % 32];
+    if (cost > 1000)
+        ctx->ai_entropy_vector[0] /= 2;
+    Telemetry_LogEvent("PlanThrottle", (UINTN)cost, 0);
+    AICore_RecordPhase("ai_core", 989, (UINTN)(cost & 0xFFFF));
+    return EFI_SUCCESS;
+}
+
+// === Phase 990: AI Federated Sync Channel Handler ===
+EFI_STATUS AICore_InitPhase990_AIFederatedSyncChannelHandler(KERNEL_CONTEXT *ctx) {
+    UINT64 package = ctx->trust_score ^ ctx->boot_dna_trust[0];
+    Telemetry_LogEvent("FederatedSync", (UINTN)package, 0);
+    ctx->ai_ready = TRUE;
+    AICore_RecordPhase("ai_core", 990, (UINTN)package);
+    return EFI_SUCCESS;
+}
+
 EFI_STATUS AICore_RunAllPhases(KERNEL_CONTEXT *ctx) {
     EFI_STATUS Status = EFI_SUCCESS;
-    for (UINTN phase = 861; phase <= 960; ++phase) {
+    for (UINTN phase = 861; phase <= 990; ++phase) {
         switch (phase) {
             case 861: Status = AICore_InitPhase861_BootstrapAICore(ctx); break;
             case 862: Status = AICore_InitPhase862_SystemIntentRecognizer(ctx); break;
@@ -999,6 +1349,36 @@ EFI_STATUS AICore_RunAllPhases(KERNEL_CONTEXT *ctx) {
             case 958: Status = AICore_InitPhase958_AIZeroDriftPhaseVerifier(ctx); break;
             case 959: Status = AICore_InitPhase959_RealTimePredictionDropMonitor(ctx); break;
             case 960: Status = AICore_InitPhase960_FinalizeAIBlockC(ctx); break;
+            case 961: Status = AICore_InitPhase961_TrustForecastEntropyBalancer(ctx); break;
+            case 962: Status = AICore_InitPhase962_NextPhaseImpactForecaster(ctx); break;
+            case 963: Status = AICore_InitPhase963_EntropySpikePreventionAgent(ctx); break;
+            case 964: Status = AICore_InitPhase964_ConfidenceFlowSmoother(ctx); break;
+            case 965: Status = AICore_InitPhase965_AIRewardLearningRefiner(ctx); break;
+            case 966: Status = AICore_InitPhase966_AIResonanceProfileEmitter(ctx); break;
+            case 967: Status = AICore_InitPhase967_AIKernelIntentMirror(ctx); break;
+            case 968: Status = AICore_InitPhase968_AIResolutionCurveAdjuster(ctx); break;
+            case 969: Status = AICore_InitPhase969_AILatencyDriftEqualizer(ctx); break;
+            case 970: Status = AICore_InitPhase970_AITrustEntropyFusionPlotter(ctx); break;
+            case 971: Status = AICore_InitPhase971_AIThreadForecastAligner(ctx); break;
+            case 972: Status = AICore_InitPhase972_TrustPredictionNoiseFilter(ctx); break;
+            case 973: Status = AICore_InitPhase973_AIActionCoherenceChecker(ctx); break;
+            case 974: Status = AICore_InitPhase974_AIMisfireQuarantineTrigger(ctx); break;
+            case 975: Status = AICore_InitPhase975_AITrustSlopeRegulator(ctx); break;
+            case 976: Status = AICore_InitPhase976_AIPhaseEntropyTimer(ctx); break;
+            case 977: Status = AICore_InitPhase977_AIRealTimeSurgeLimiter(ctx); break;
+            case 978: Status = AICore_InitPhase978_AIPriorityDecayBalancer(ctx); break;
+            case 979: Status = AICore_InitPhase979_AIIntuitionFeedbackIntegrator(ctx); break;
+            case 980: Status = AICore_InitPhase980_AIBlockD_Finalizer(ctx); break;
+            case 981: Status = AICore_InitPhase981_AIKernelPlanningAgent(ctx); break;
+            case 982: Status = AICore_InitPhase982_AINarrativeCurveGenerator(ctx); break;
+            case 983: Status = AICore_InitPhase983_AIPlanIntentSynchronizer(ctx); break;
+            case 984: Status = AICore_InitPhase984_AIThreatAnticipationMap(ctx); break;
+            case 985: Status = AICore_InitPhase985_AIFailureBubbleForecaster(ctx); break;
+            case 986: Status = AICore_InitPhase986_AIFutureActionHeatmapEmitter(ctx); break;
+            case 987: Status = AICore_InitPhase987_AIPlanTrustDeflectionModel(ctx); break;
+            case 988: Status = AICore_InitPhase988_AIKernelTrustNegotiator(ctx); break;
+            case 989: Status = AICore_InitPhase989_AIPlanEntropyThrottler(ctx); break;
+            case 990: Status = AICore_InitPhase990_AIFederatedSyncChannelHandler(ctx); break;
             default: Status = EFI_INVALID_PARAMETER; break;
         }
         if (EFI_ERROR(Status)) {
