@@ -90,6 +90,10 @@ typedef struct {
     BOOLEAN io_sleep_state;
     BOOLEAN io_mirror_built;
     UINTN io_active_device;
+    UINT64 device_recovery[16];
+    UINT64 boot_dna_trust[16];
+    UINT64 final_io_summary;
+    BOOLEAN io_mind_complete;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
