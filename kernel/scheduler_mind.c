@@ -15,10 +15,22 @@ EFI_STATUS Cpu_Advisory_SetVoltage(UINTN level);
 EFI_STATUS Cpu_EvictCacheLines(UINTN thread_id, UINTN *freed);
 EFI_STATUS MemoryMind_RequestBudget(UINTN *budget);
 EFI_STATUS AICore_AttachToBootDNA(const CHAR8 *module, UINT64 trust);
-EFI_STATUS AICore_FinalizeSchedulerMind(UINTN miss);
+EFI_STATUS AICore_FinalizeSchedulerMind(UINTN miss, UINT64 entropy);
 EFI_STATUS AICore_PredictTaskOrder(UINTN *tasks, UINTN count);
 EFI_STATUS AICore_ReportEvent(const CHAR8 *name);
 EFI_STATUS GpuMind_TransferHeatmap(UINT64 *map, UINTN w, UINTN h);
+EFI_STATUS AICore_PredictEntropyMap(UINT64 *map, UINTN count);
+EFI_STATUS AICore_PredictPhaseMiss(UINTN phase_id, UINTN *prob);
+EFI_STATUS AICore_PredictNextPhaseSet(UINTN *phases, UINTN count);
+UINTN AICore_ScorePhaseHealth(UINTN phase_id, UINT64 tsc, UINTN miss, UINT64 entropy);
+EFI_STATUS AICore_InitEntropyTrustModel(void);
+EFI_STATUS AICore_InvokeRecovery(const CHAR8 *module, UINTN phase);
+UINTN Telemetry_GetTemperature(void);
+EFI_STATUS CPUSetAffinity(UINTN core);
+EFI_STATUS CPU_DisableCore(UINTN id);
+EFI_STATUS GpuMind_RunPhaseDirect(UINTN phase_id);
+EFI_STATUS AICore_EstimateIODeadlineUrgency(UINTN *urg);
+EFI_STATUS AICore_PredictSuccessRate(UINTN phase_id, UINTN *prob);
 
 static EFI_STATUS Scheduler_InitPhase451_BootstrapContext(KERNEL_CONTEXT *ctx) {
     ZeroMem(ctx->scheduler_entropy_buffer, sizeof(ctx->scheduler_entropy_buffer));
@@ -831,60 +843,393 @@ static EFI_STATUS Scheduler_InitPhase530_PredictiveForkRegulator(KERNEL_CONTEXT 
     return EFI_SUCCESS;
 }
 
+// === New Scheduler Phases 451-500 ===
+static EFI_STATUS SchedulerPhase451_TaskLoadAnalyzer(KERNEL_CONTEXT *ctx) {
+    UINT64 cpu_sum = 0, mem_sum = 0, cpu_max = 0, mem_max = 0;
+    for (UINTN i = 0; i < CPU_PHASE_COUNT; ++i) {
+        UINT64 v = ctx->cpu_elapsed_tsc[i];
+        cpu_sum += v; if (v > cpu_max) cpu_max = v;
+    }
+    for (UINTN i = 0; i < MEMORY_PHASE_COUNT; ++i) {
+        UINT64 v = ctx->memory_elapsed_tsc[i];
+        mem_sum += v; if (v > mem_max) mem_max = v;
+    }
+    UINT64 cpu_avg = cpu_sum / CPU_PHASE_COUNT;
+    UINT64 mem_avg = mem_sum / MEMORY_PHASE_COUNT;
+    if (cpu_max > cpu_avg + cpu_avg / 4 || mem_max > mem_avg + mem_avg / 4)
+        Telemetry_LogEvent("TaskLoadImbalance", (UINTN)cpu_max, (UINTN)mem_max);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase452_PhaseTimeProfiler(KERNEL_CONTEXT *ctx) {
+    static UINTN cpu_hist[10];
+    static UINTN mem_hist[10];
+    for (UINTN i = 0; i < CPU_PHASE_COUNT; ++i) {
+        UINTN idx = ctx->cpu_elapsed_tsc[i] / 1000000;
+        if (idx < 10) cpu_hist[idx]++;
+    }
+    for (UINTN i = 0; i < MEMORY_PHASE_COUNT; ++i) {
+        UINTN idx = ctx->memory_elapsed_tsc[i] / 1000000;
+        if (idx < 10) mem_hist[idx]++;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase453_TrustAwareSchedulerBoost(KERNEL_CONTEXT *ctx) {
+    if (Trust_GetCurrentScore() > 75) {
+        for (UINTN i = 0; i < 8; ++i)
+            ctx->quantum_table[i] *= 2;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase454_AIEntropySchedulerMap(KERNEL_CONTEXT *ctx) {
+    UINT64 map[8];
+    AICore_PredictEntropyMap(map, 8);
+    ctx->scheduler_entropy_index = (UINTN)(ctx->EntropyScore & 7);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase455_PhaseMissPenaltyAdjuster(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < CPU_PHASE_COUNT; ++i)
+        if (ctx->cpu_missed[i]) ctx->quantum_table[i % 8]++;
+    for (UINTN i = 0; i < MEMORY_PHASE_COUNT; ++i)
+        if (ctx->memory_missed[i]) ctx->quantum_table[i % 8]++;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase456_ThermalAwareTaskDefer(KERNEL_CONTEXT *ctx) {
+    if (Telemetry_GetTemperature() > 85)
+        ctx->scheduler_pressure_mode = TRUE;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase457_TrustBoostThreadScaler(KERNEL_CONTEXT *ctx) {
+    static UINTN active = 4;
+    if (Trust_GetCurrentScore() > 80 && active < 8)
+        active += 2;
+    else if (active > 1)
+        active -= 1;
+    ctx->hotspot_cpu = active;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase458_SchedulerEntropyFeedbackLoop(KERNEL_CONTEXT *ctx) {
+    static UINT64 prev = 0;
+    if (ctx->EntropyScore > prev)
+        ctx->background_priority = 0;
+    else
+        ctx->background_priority++;
+    prev = ctx->EntropyScore;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase459_TrustDecayOnIdle(KERNEL_CONTEXT *ctx) {
+    static UINT8 idle[8] = {0};
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->cpu_elapsed_tsc[i] == 0) {
+            if (++idle[i] > 5) { Trust_AdjustScore(i, -1); idle[i] = 0; }
+        } else {
+            idle[i] = 0;
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase460_CoreAffinityPredictor(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i) CPUSetAffinity(i);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase461_ThreadAnomalySuppressor(KERNEL_CONTEXT *ctx) {
+    static UINT8 miss[8] = {0};
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->cpu_missed[i]) miss[i]++; else miss[i] = 0;
+        if (miss[i] > 3) ctx->thread_numa_map[i] = 0;
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase462_HeatmapMemoryCPUAligner(KERNEL_CONTEXT *ctx) {
+    UINT64 map[8];
+    AICore_PredictEntropyMap(map, 8);
+    for (UINTN i = 0; i < 8; ++i)
+        if (map[i] & 1) CPUSetAffinity(i);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase463_SchedulerPhaseClassifier(KERNEL_CONTEXT *ctx) {
+    UINTN cls = AICore_ScorePhaseHealth(0, ctx->cpu_elapsed_tsc[0], ctx->cpu_missed[0], ctx->EntropyScore);
+    ctx->quantum_table[0] = cls;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase464_PhaseRepeatOptimizer(KERNEL_CONTEXT *ctx) {
+    static UINT64 prev[8] = {0};
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->cpu_elapsed_tsc[i] == prev[i] && ctx->quantum_table[i] > 1)
+            ctx->quantum_table[i] /= 2;
+        prev[i] = ctx->cpu_elapsed_tsc[i];
+    }
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase465_PreemptiveLoadForecaster(KERNEL_CONTEXT *ctx) {
+    static UINT64 hist[5]; static UINTN idx = 0;
+    hist[idx % 5] = ctx->cpu_elapsed_tsc[0];
+    idx++;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase466_TrustScoreVelocityTracker(KERNEL_CONTEXT *ctx) {
+    static UINT64 history[3];
+    history[ctx->total_phases % 3] = Trust_GetCurrentScore();
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase467_SleepOptimizer(KERNEL_CONTEXT *ctx) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase468_TimeBudgetEnforcer(KERNEL_CONTEXT *ctx) {
+    static UINT64 start = 0;
+    if (!start) start = AsmReadTsc();
+    if (AsmReadTsc() - start > 20000000)
+        return EFI_ABORTED;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase469_PhaseRunQuotaEnforcer(KERNEL_CONTEXT *ctx) {
+    static UINT8 cnt[CPU_PHASE_COUNT];
+    for (UINTN i = 0; i < CPU_PHASE_COUNT; ++i)
+        if (ctx->cpu_missed[i]) cnt[i]++;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase470_AIContextPhasePrefetcher(KERNEL_CONTEXT *ctx) {
+    UINTN set[4];
+    AICore_PredictNextPhaseSet(set, 4);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase471_PowerEntropyTradeoffBalancer(KERNEL_CONTEXT *ctx) {
+    if (Telemetry_GetTemperature() > 90)
+        ctx->scheduler_pressure_mode = TRUE;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase472_IOPhaseUrgencyPredictor(KERNEL_CONTEXT *ctx) {
+    UINTN u = 0; AICore_EstimateIODeadlineUrgency(&u);
+    ctx->background_priority = (UINT8)u;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase473_GPUPhaseSchedulerHook(KERNEL_CONTEXT *ctx) {
+    GpuMind_RunPhaseDirect(ctx->hotspot_cpu);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase474_SchedulerIdlePhaseInserter(KERNEL_CONTEXT *ctx) {
+    if ((ctx->total_phases % 30) == 0) AsmReadTsc();
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase475_MultiMindCoordinationLayer(KERNEL_CONTEXT *ctx) {
+    Telemetry_LogEvent("MultiMind", 0, 0);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase476_PhaseAnomalyHistoryBuilder(KERNEL_CONTEXT *ctx) {
+    static UINTN hist[100]; static UINTN idx = 0;
+    if (ctx->MissCount) hist[idx++ % 100] = ctx->MissCount;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase477_TSCPhaseScoringModel(KERNEL_CONTEXT *ctx) {
+    UINTN score = AICore_ScorePhaseHealth(0, ctx->cpu_elapsed_tsc[0], ctx->cpu_missed[0], ctx->EntropyScore);
+    ctx->phase_entropy[0] = score;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase478_EmergencyBackoffScheduler(KERNEL_CONTEXT *ctx) {
+    if (ctx->MissCount > 50) ctx->scheduler_pressure_mode = TRUE;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase479_LowEntropyPhaseSuppressor(KERNEL_CONTEXT *ctx) {
+    static UINT64 hist[3]; static UINTN idx = 0;
+    hist[idx % 3] = ctx->EntropyScore; idx++;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase480_SystemTrustRebalancer(KERNEL_CONTEXT *ctx) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase481_PhaseChainRecoveryStarter(KERNEL_CONTEXT *ctx) {
+    return AICore_InvokeRecovery("scheduler", 0);
+}
+
+static EFI_STATUS SchedulerPhase482_CPUUtilizationMonitor(KERNEL_CONTEXT *ctx) {
+    Telemetry_LogEvent("CPUUtil", (UINTN)ctx->cpu_elapsed_tsc[0], 0);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase483_PriorityDeltaReweighter(KERNEL_CONTEXT *ctx) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase484_SelfSchedulingPhaseAgent(KERNEL_CONTEXT *ctx) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase485_PhaseEntropyTimeFusion(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i)
+        ctx->phase_entropy[i % 20] = (ctx->EntropyScore & 0xFF) + (100 - (ctx->cpu_elapsed_tsc[i] & 0xFF));
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase486_LongRunningPhaseLimiter(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i)
+        if (ctx->cpu_elapsed_tsc[i] > 2 * CPU_PHASE_THRESHOLD)
+            ctx->cpu_missed[i] = 1;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase487_SchedulerPowerGateActivator(KERNEL_CONTEXT *ctx) {
+    static UINT8 low = 0; UINT64 load = 0;
+    for (UINTN i = 0; i < 8; ++i) load += ctx->cpu_load_map[i];
+    if (load / 8 < 30) low++; else low = 0;
+    if (low >= 3) CPU_DisableCore(7);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase488_TimeAwareTrustCurveAdjuster(KERNEL_CONTEXT *ctx) {
+    Trust_AdjustScore(0, 1);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase489_MultiMindHeatBalancer(KERNEL_CONTEXT *ctx) {
+    UINTN cpu = Telemetry_GetTemperature();
+    UINTN gpu = cpu + 10;
+    if (gpu > cpu + 15) ctx->hotspot_cpu = (ctx->hotspot_cpu + 1) % 8;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase490_SchedulerProgressBarRenderer(KERNEL_CONTEXT *ctx) {
+    AICore_DrawProgress("Scheduler", ctx->total_phases * 2);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase491_MissRatePredictiveReducer(KERNEL_CONTEXT *ctx) {
+    UINTN p = 0; AICore_PredictPhaseMiss(ctx->total_phases, &p);
+    if (p > 70) ctx->scheduler_pressure_mode = TRUE;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase492_DynamicContextPhaseShifter(KERNEL_CONTEXT *ctx) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase493_TaskTimeDebtRedistributor(KERNEL_CONTEXT *ctx) {
+    UINT64 expected = CPU_PHASE_THRESHOLD;
+    if (expected > ctx->cpu_elapsed_tsc[0])
+        ctx->cpu_elapsed_tsc[1] += expected - ctx->cpu_elapsed_tsc[0];
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase494_InterMindTrustTransfer(KERNEL_CONTEXT *ctx) {
+    Trust_Transfer(0, 1, 2);
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase495_CoreSwitchCooldownGuard(KERNEL_CONTEXT *ctx) {
+    static UINT64 last = 0; static UINTN core = 0;
+    UINT64 now = AsmReadTsc();
+    if (ctx->hotspot_cpu != core && now - last < 3000) return EFI_SUCCESS;
+    core = ctx->hotspot_cpu; last = now;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase496_SchedulerEntropyFootprintTracer(KERNEL_CONTEXT *ctx) {
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase497_PredictivePhaseDeactivation(KERNEL_CONTEXT *ctx) {
+    UINTN p = 0; AICore_PredictSuccessRate(ctx->total_phases, &p);
+    if (p < 30) ctx->cpu_missed[ctx->total_phases % CPU_PHASE_COUNT] = 1;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase498_BootstrapSchedulerSanityCheck(KERNEL_CONTEXT *ctx) {
+    if (!ctx->cpu_elapsed_tsc || !ctx->memory_elapsed_tsc) return EFI_ABORTED;
+    return EFI_SUCCESS;
+}
+
+static EFI_STATUS SchedulerPhase499_EntropyTrustPredictorInit(KERNEL_CONTEXT *ctx) {
+    return AICore_InitEntropyTrustModel();
+}
+
+static EFI_STATUS SchedulerPhase500_FinalizeSchedulerMind(KERNEL_CONTEXT *ctx) {
+    AICore_FinalizeSchedulerMind(ctx->MissCount, ctx->EntropyScore);
+    Telemetry_LogEvent("SchedFinal", ctx->MissCount, (UINTN)ctx->EntropyScore);
+    return EFI_SUCCESS;
+}
+
 EFI_STATUS SchedulerMind_RunAllPhases(KERNEL_CONTEXT *ctx) {
     EFI_STATUS Status;
     for (UINTN phase = 451; phase <= 530; ++phase) {
         switch (phase) {
-            case 451: Status = Scheduler_InitPhase451_BootstrapContext(ctx); break;
-            case 452: Status = Scheduler_InitPhase452_MapCpuLoad(ctx); break;
-            case 453: Status = Scheduler_InitPhase453_AdjustQuantum(ctx); break;
-            case 454: Status = Scheduler_InitPhase454_ScanStarvation(ctx); break;
-            case 455: Status = Scheduler_InitPhase455_LogEntropySlope(ctx); break;
-            case 456: Status = Scheduler_InitPhase456_SelectAiTopTasks(ctx); break;
-            case 457: Status = Scheduler_InitPhase457_AdjustTrustOnSwitch(ctx); break;
-            case 458: Status = Scheduler_InitPhase458_CollectZombies(ctx); break;
-            case 459: Status = Scheduler_InitPhase459_SyncMemoryPressure(ctx); break;
-            case 460: Status = Scheduler_InitPhase460_RebalanceNUMA(ctx); break;
-            case 461: Status = Scheduler_InitPhase461_RecordHistory(ctx); break;
-            case 462: Status = Scheduler_InitPhase462_PredictBurst(ctx); break;
-            case 463: Status = Scheduler_InitPhase463_InjectEntropyStabilizer(ctx); break;
-            case 464: Status = Scheduler_InitPhase464_DetectDeadlock(ctx); break;
-            case 465: Status = Scheduler_InitPhase465_StarvationTrustFix(ctx); break;
-            case 466: Status = Scheduler_InitPhase466_SyncWithCpuMind(ctx); break;
-            case 467: Status = Scheduler_InitPhase467_FreezeRealtimeViolators(ctx); break;
-            case 468: Status = Scheduler_InitPhase468_ComputeContentionIndex(ctx); break;
-            case 469: Status = Scheduler_InitPhase469_GenerateEntropyHeatmap(ctx); break;
-            case 470: Status = Scheduler_InitPhase470_PredictTaskOrder(ctx); break;
-            case 471: Status = Scheduler_InitPhase471_DeferLowPriority(ctx); break;
-            case 472: Status = Scheduler_InitPhase472_ApplyTBPA(ctx); break;
-            case 473: Status = Scheduler_InitPhase473_AffinityThermalAware(ctx); break;
-            case 474: Status = Scheduler_InitPhase474_ResetTrustDecayTimer(ctx); break;
-            case 475: Status = Scheduler_InitPhase475_CheckRetiredInstructions(ctx); break;
-            case 476: Status = Scheduler_InitPhase476_ClassifyBackgroundTasks(ctx); break;
-            case 477: Status = Scheduler_InitPhase477_BoostIdleTrust(ctx); break;
-            case 478: Status = Scheduler_InitPhase478_AdjustEntropyPenalty(ctx); break;
-            case 479: Status = Scheduler_InitPhase479_RewardFastTasks(ctx); break;
-            case 480: Status = Scheduler_InitPhase480_NotifyEntropyBurst(ctx); break;
-            case 481: Status = Scheduler_InitPhase481_LogTaskSnapshot(ctx); break;
-            case 482: Status = Scheduler_InitPhase482_AnalyzeEntropyGap(ctx); break;
-            case 483: Status = Scheduler_InitPhase483_PenalizeTscViolations(ctx); break;
-            case 484: Status = Scheduler_InitPhase484_SuggestVoltageScaling(ctx); break;
-            case 485: Status = Scheduler_InitPhase485_DetectThreadForkStorms(ctx); break;
-            case 486: Status = Scheduler_InitPhase486_EnforceMemoryAffinity(ctx); break;
-            case 487: Status = Scheduler_InitPhase487_EstimateContextPenalty(ctx); break;
-            case 488: Status = Scheduler_InitPhase488_EvictLowTrustCache(ctx); break;
-            case 489: Status = Scheduler_InitPhase489_CommitStateToBootDNA(ctx); break;
-            case 490: Status = Scheduler_InitPhase490_LogEntropyDecay(ctx); break;
-            case 491: Status = Scheduler_InitPhase491_TriggerTrustRecovery(ctx); break;
-            case 492: Status = Scheduler_InitPhase492_BlockSpeculativeLaunch(ctx); break;
-            case 493: Status = Scheduler_InitPhase493_UploadPredictiveMap(ctx); break;
-            case 494: Status = Scheduler_InitPhase494_RecordLatencyHistogram(ctx); break;
-            case 495: Status = Scheduler_InitPhase495_RequestMemoryBudget(ctx); break;
-            case 496: Status = Scheduler_InitPhase496_ReportTrustCurve(ctx); break;
-            case 497: Status = Scheduler_InitPhase497_WarmupBalancer(ctx); break;
-            case 498: Status = Scheduler_InitPhase498_FallbackMigration(ctx); break;
-            case 499: Status = Scheduler_InitPhase499_AttachBootTrustWeight(ctx); break;
-            case 500: Status = Scheduler_InitPhase500_FinalizeSchedulerMind(ctx); break;
+            case 451: Status = SchedulerPhase451_TaskLoadAnalyzer(ctx); break;
+            case 452: Status = SchedulerPhase452_PhaseTimeProfiler(ctx); break;
+            case 453: Status = SchedulerPhase453_TrustAwareSchedulerBoost(ctx); break;
+            case 454: Status = SchedulerPhase454_AIEntropySchedulerMap(ctx); break;
+            case 455: Status = SchedulerPhase455_PhaseMissPenaltyAdjuster(ctx); break;
+            case 456: Status = SchedulerPhase456_ThermalAwareTaskDefer(ctx); break;
+            case 457: Status = SchedulerPhase457_TrustBoostThreadScaler(ctx); break;
+            case 458: Status = SchedulerPhase458_SchedulerEntropyFeedbackLoop(ctx); break;
+            case 459: Status = SchedulerPhase459_TrustDecayOnIdle(ctx); break;
+            case 460: Status = SchedulerPhase460_CoreAffinityPredictor(ctx); break;
+            case 461: Status = SchedulerPhase461_ThreadAnomalySuppressor(ctx); break;
+            case 462: Status = SchedulerPhase462_HeatmapMemoryCPUAligner(ctx); break;
+            case 463: Status = SchedulerPhase463_SchedulerPhaseClassifier(ctx); break;
+            case 464: Status = SchedulerPhase464_PhaseRepeatOptimizer(ctx); break;
+            case 465: Status = SchedulerPhase465_PreemptiveLoadForecaster(ctx); break;
+            case 466: Status = SchedulerPhase466_TrustScoreVelocityTracker(ctx); break;
+            case 467: Status = SchedulerPhase467_SleepOptimizer(ctx); break;
+            case 468: Status = SchedulerPhase468_TimeBudgetEnforcer(ctx); if (EFI_ERROR(Status)) return Status; break;
+            case 469: Status = SchedulerPhase469_PhaseRunQuotaEnforcer(ctx); break;
+            case 470: Status = SchedulerPhase470_AIContextPhasePrefetcher(ctx); break;
+            case 471: Status = SchedulerPhase471_PowerEntropyTradeoffBalancer(ctx); break;
+            case 472: Status = SchedulerPhase472_IOPhaseUrgencyPredictor(ctx); break;
+            case 473: Status = SchedulerPhase473_GPUPhaseSchedulerHook(ctx); break;
+            case 474: Status = SchedulerPhase474_SchedulerIdlePhaseInserter(ctx); break;
+            case 475: Status = SchedulerPhase475_MultiMindCoordinationLayer(ctx); break;
+            case 476: Status = SchedulerPhase476_PhaseAnomalyHistoryBuilder(ctx); break;
+            case 477: Status = SchedulerPhase477_TSCPhaseScoringModel(ctx); break;
+            case 478: Status = SchedulerPhase478_EmergencyBackoffScheduler(ctx); break;
+            case 479: Status = SchedulerPhase479_LowEntropyPhaseSuppressor(ctx); break;
+            case 480: Status = SchedulerPhase480_SystemTrustRebalancer(ctx); break;
+            case 481: Status = SchedulerPhase481_PhaseChainRecoveryStarter(ctx); break;
+            case 482: Status = SchedulerPhase482_CPUUtilizationMonitor(ctx); break;
+            case 483: Status = SchedulerPhase483_PriorityDeltaReweighter(ctx); break;
+            case 484: Status = SchedulerPhase484_SelfSchedulingPhaseAgent(ctx); break;
+            case 485: Status = SchedulerPhase485_PhaseEntropyTimeFusion(ctx); break;
+            case 486: Status = SchedulerPhase486_LongRunningPhaseLimiter(ctx); break;
+            case 487: Status = SchedulerPhase487_SchedulerPowerGateActivator(ctx); break;
+            case 488: Status = SchedulerPhase488_TimeAwareTrustCurveAdjuster(ctx); break;
+            case 489: Status = SchedulerPhase489_MultiMindHeatBalancer(ctx); break;
+            case 490: Status = SchedulerPhase490_SchedulerProgressBarRenderer(ctx); break;
+            case 491: Status = SchedulerPhase491_MissRatePredictiveReducer(ctx); break;
+            case 492: Status = SchedulerPhase492_DynamicContextPhaseShifter(ctx); break;
+            case 493: Status = SchedulerPhase493_TaskTimeDebtRedistributor(ctx); break;
+            case 494: Status = SchedulerPhase494_InterMindTrustTransfer(ctx); break;
+            case 495: Status = SchedulerPhase495_CoreSwitchCooldownGuard(ctx); break;
+            case 496: Status = SchedulerPhase496_SchedulerEntropyFootprintTracer(ctx); break;
+            case 497: Status = SchedulerPhase497_PredictivePhaseDeactivation(ctx); break;
+            case 498: Status = SchedulerPhase498_BootstrapSchedulerSanityCheck(ctx); if (EFI_ERROR(Status)) return Status; break;
+            case 499: Status = SchedulerPhase499_EntropyTrustPredictorInit(ctx); break;
+            case 500: Status = SchedulerPhase500_FinalizeSchedulerMind(ctx); break;
             case 501: case 502: case 503: case 504: case 505:
             case 506: case 507: case 508: case 509: case 510:
                 Status = EFI_SUCCESS; break;

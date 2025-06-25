@@ -10,7 +10,7 @@ EFI_STATUS AICore_RecordPhase(const CHAR8 *name, UINTN phase, UINTN value);
 UINTN* AICore_SelectTopTasks(UINTN count);
 EFI_STATUS AICore_PredictBurstLoad(UINTN *prob);
 EFI_STATUS AICore_AttachToBootDNA(const CHAR8 *module, UINT64 trust);
-EFI_STATUS AICore_FinalizeSchedulerMind(UINTN miss);
+EFI_STATUS AICore_FinalizeSchedulerMind(UINTN miss, UINT64 entropy);
 EFI_STATUS AICore_FinalizeMemoryMind(UINTN miss, UINT64 entropy);
 EFI_STATUS AICore_FinalizeGpuMind(UINTN miss);
 EFI_STATUS AICore_FinalizeIOMind(UINTN miss);
@@ -18,6 +18,14 @@ EFI_STATUS AICore_PredictTaskOrder(UINTN *tasks, UINTN count);
 EFI_STATUS AICore_DrawProgress(const CHAR8 *task, UINTN pct);
 EFI_STATUS AICore_SealMemory(const CHAR8 *name, UINTN size, UINT64 entropy);
 EFI_STATUS AICore_CommitTrust(const CHAR8 *tag, UINT64 trust);
+EFI_STATUS AICore_PredictEntropyMap(UINT64 *map, UINTN count);
+EFI_STATUS AICore_PredictPhaseMiss(UINTN phase_id, UINTN *prob);
+EFI_STATUS AICore_PredictNextPhaseSet(UINTN *phases, UINTN count);
+UINTN AICore_ScorePhaseHealth(UINTN phase_id, UINT64 tsc, UINTN miss, UINT64 entropy);
+EFI_STATUS AICore_InitEntropyTrustModel(void);
+EFI_STATUS AICore_InvokeRecovery(const CHAR8 *module, UINTN phase);
+EFI_STATUS AICore_EstimateIODeadlineUrgency(UINTN *urg);
+EFI_STATUS AICore_PredictSuccessRate(UINTN phase_id, UINTN *prob);
 
 EFI_STATUS AICore_SendToTelemetry(void);
 
