@@ -42,6 +42,12 @@ void Trust_AdjustScore(UINTN id, INTN delta) {
     gTrustHead = (gTrustHead + 1) % TRUST_RING_SIZE;
 }
 
+void Trust_Transfer(UINTN from, UINTN to, UINTN amount) {
+    if (amount == 0) return;
+    Trust_AdjustScore(from, -(INTN)amount);
+    Trust_AdjustScore(to, (INTN)amount);
+}
+
 EFI_STATUS Trust_InitPhase761_BootstrapTrustMind(KERNEL_CONTEXT *ctx) {
     Trust_Reset();
     ctx->trust_score = gTrustScore;

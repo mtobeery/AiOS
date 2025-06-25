@@ -54,8 +54,8 @@ EFI_STATUS AICore_AttachToBootDNA(const CHAR8 *module, UINT64 trust) {
     return EFI_SUCCESS;
 }
 
-EFI_STATUS AICore_FinalizeSchedulerMind(UINTN miss) {
-    Telemetry_LogEvent("SchedFinal", miss, 0);
+EFI_STATUS AICore_FinalizeSchedulerMind(UINTN miss, UINT64 entropy) {
+    Telemetry_LogEvent("SchedFinal", miss, (UINTN)entropy);
     return EFI_SUCCESS;
 }
 
@@ -99,6 +99,50 @@ EFI_STATUS AICore_CommitTrust(const CHAR8 *tag, UINT64 trust) {
 
 EFI_STATUS AICore_SendToTelemetry(void) {
     Telemetry_LogEvent("AICoreSync", 0, 0);
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS AICore_PredictEntropyMap(UINT64 *map, UINTN count) {
+    if (!map) return EFI_INVALID_PARAMETER;
+    for (UINTN i = 0; i < count; ++i) map[i] = AsmReadTsc() ^ i;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS AICore_PredictPhaseMiss(UINTN phase_id, UINTN *prob) {
+    if (!prob) return EFI_INVALID_PARAMETER;
+    *prob = (phase_id * 7) % 100;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS AICore_PredictNextPhaseSet(UINTN *phases, UINTN count) {
+    if (!phases) return EFI_INVALID_PARAMETER;
+    for (UINTN i = 0; i < count; ++i) phases[i] = i;
+    return EFI_SUCCESS;
+}
+
+UINTN AICore_ScorePhaseHealth(UINTN phase_id, UINT64 tsc, UINTN miss, UINT64 entropy) {
+    return (UINTN)((entropy & 0xFF) + (tsc & 0xFF) - miss);
+}
+
+EFI_STATUS AICore_InitEntropyTrustModel(void) {
+    Telemetry_LogEvent("EntropyTrustModelInit", 0, 0);
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS AICore_InvokeRecovery(const CHAR8 *module, UINTN phase) {
+    Telemetry_LogEvent("Recovery", phase, 0);
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS AICore_EstimateIODeadlineUrgency(UINTN *urg) {
+    if (!urg) return EFI_INVALID_PARAMETER;
+    *urg = AsmReadTsc() % 100;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS AICore_PredictSuccessRate(UINTN phase_id, UINTN *prob) {
+    if (!prob) return EFI_INVALID_PARAMETER;
+    *prob = (phase_id * 5) % 100;
     return EFI_SUCCESS;
 }
 

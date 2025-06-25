@@ -5,6 +5,7 @@
 #include "kernel_shared.h"
 
 void Telemetry_LogEvent(const CHAR8 *name, UINTN a, UINTN b);
+UINTN Telemetry_GetTemperature(void);
 
 EFI_STATUS Telemetry_InitPhase711_BootstrapTelemetryMind(KERNEL_CONTEXT *ctx);
 EFI_STATUS Telemetry_InitPhase712_EntropyDeltaRecorder(KERNEL_CONTEXT *ctx);

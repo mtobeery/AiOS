@@ -38,6 +38,10 @@ void Telemetry_LogEvent(const CHAR8 *name, UINTN a, UINTN b) {
     Print(L"[TEL] %a %u %u\n", name, a, b);
 }
 
+UINTN Telemetry_GetTemperature(void) {
+    return 60 + (AsmReadTsc() % 40);
+}
+
 EFI_STATUS Telemetry_InitPhase711_BootstrapTelemetryMind(KERNEL_CONTEXT *ctx) {
     ZeroMem(gTelemetryRing, sizeof(gTelemetryRing));
     ZeroMem(gEntropyCurve, sizeof(gEntropyCurve));
