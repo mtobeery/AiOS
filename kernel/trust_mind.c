@@ -586,7 +586,7 @@ static EFI_STATUS TrustPhase651_TrustVectorEntropyFusion(KERNEL_CONTEXT *ctx, UI
     UINT64 hash = 0;
     for (UINTN i = 0; i < 16; ++i) {
         hash ^= ctx->ai_entropy_vector[i];
-        hash ^= ctx->ai_trust_matrix[i % 10][(i * 3) % 10];
+        hash ^= ctx->ai_trust_matrix[i % 10][i % 10];
         hash = (hash << 5) | (hash >> 59);
     }
     for (UINTN i = 0; i < 32; ++i)
@@ -599,7 +599,7 @@ static EFI_STATUS TrustPhase652_BehavioralDriftAnalyzer(KERNEL_CONTEXT *ctx, UIN
     UINT64 ref = ctx->boot_dna_trust[phase % 16];
     INT64 delta = (INT64)ctx->trust_score - (INT64)ref;
     if (ref && llabs(delta) * 100 / ref > 10)
-        Telemetry_LogEvent("TrustDrift", (UINTN)delta, ctx->trust_freeze_count);
+        Telemetry_LogEvent("TrustDrift", (UINTN)delta, 0);
     return EFI_SUCCESS;
 }
 
@@ -610,503 +610,408 @@ static EFI_STATUS TrustPhase653_AITrustFeedbackLoop(KERNEL_CONTEXT *ctx, UINTN p
     for (UINTN i = 0; i < 10; ++i) {
         if (change > 0) ctx->ai_rule_weights[i]++;
         else if (change < 0) ctx->ai_rule_weights[i]--;
-        accum += (change > 0) ? 1 : (change < 0 ? -1 : 0);
     }
-    if (accum > 5 || accum < -5) {
-        ctx->ai_retrain_id++;
-        accum = 0;
-    }
+    accum += (change > 0) ? 1 : (change < 0 ? -1 : 0);
+    if (accum > 5 || accum < -5) { ctx->ai_retrain_id++; accum = 0; }
     return EFI_SUCCESS;
 }
 
-// === Phase 654: TrustTemporalStabilityModel ===
-static EFI_STATUS TrustPhase654_TrustTemporalStabilityModel(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 mean = 0, var = 0;
-    for (UINTN i = 0; i < 20; ++i) mean += ctx->phase_trust[i];
-    mean /= 20;
-    for (UINTN i = 0; i < 20; ++i) {
-        INT64 d = (INT64)ctx->phase_trust[i] - (INT64)mean;
-        var += (UINT64)(d * d);
+// === Phase 654: TrustMemoryLeakTracker ===
+static EFI_STATUS TrustPhase654_TrustMemoryLeakTracker(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 hist[3]; static UINTN idx = 0; static UINTN prev_size = 0;
+    hist[idx % 3] = ctx->trust_score; idx++;
+    if (idx >= 3) {
+        UINT64 drop = (hist[(idx+2)%3] > hist[(idx+1)%3]) ? hist[(idx+2)%3]-hist[(idx+1)%3] : hist[(idx+1)%3]-hist[(idx+2)%3];
+        if (hist[(idx+1)%3] > 0 && drop * 100 / hist[(idx+1)%3] > 10) {
+            UINTN delta = (ctx->MemoryMapSize > prev_size) ? ctx->MemoryMapSize - prev_size : 0;
+            Telemetry_LogEvent("LeakTrack", delta, 0);
+        }
     }
-    var /= 20;
-    if (var > 100)
-        Telemetry_LogEvent("TrustUnstable", (UINTN)var, 0);
-    else
-        ctx->ai_global_trust_score++;
+    prev_size = ctx->MemoryMapSize;
     return EFI_SUCCESS;
 }
 
-// === Phase 655: TrustAnomalyHeatmap ===
-static EFI_STATUS TrustPhase655_TrustAnomalyHeatmap(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 scores[4];
-    scores[0] = 100 - ctx->trust_score;
-    scores[1] = ctx->ai_gpu_delegate_ready ? 0 : 50;
-    scores[2] = 100 - ctx->io_trust_map[0];
-    scores[3] = 100 - ctx->io_trust_map[1];
-    for (UINTN i = 0; i < 4; ++i)
-        ctx->ai_trust_matrix[0][i] = scores[i];
-    UINTN max_i = 0; UINT64 max_v = scores[0];
-    for (UINTN i = 1; i < 4; ++i)
-        if (scores[i] > max_v) { max_v = scores[i]; max_i = i; }
-    AICore_ReportPhase("AnomalyHeat", max_i);
-    return EFI_SUCCESS;
-}
-
-// === Phase 656: BootDNAIntegrityMonitor ===
-static EFI_STATUS TrustPhase656_BootDNAIntegrityMonitor(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT32 crc1 = 0, crc2 = 0;
-    for (UINTN i = 0; i < sizeof(ctx->boot_dna_trust); ++i)
-        crc1 += ((UINT8*)ctx->boot_dna_trust)[i];
-    for (UINTN i = 0; i < sizeof(ctx->trust_anchor); ++i)
-        crc2 += ctx->trust_anchor[i];
-    UINT32 diff = (crc1 > crc2) ? (crc1 - crc2) : (crc2 - crc1);
-    if (crc1 && diff * 100 / crc1 > 2) {
-        if (ctx->trust_score > 5) ctx->trust_score -= 5;
-        Telemetry_LogEvent("BootDNAChk", diff, 0);
+// === Phase 655: TrustReinforcementAgent ===
+static EFI_STATUS TrustPhase655_TrustReinforcementAgent(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN stable = 0;
+    if (ctx->EntropyScore == gPrevEntropy && ctx->trust_score >= gPrevTrust) stable++; else stable = 0;
+    if (stable >= 5) {
+        if (ctx->trust_score < 100) ctx->trust_score += 1 + (phase & 1);
+        stable = 0;
     }
     return EFI_SUCCESS;
 }
 
-// === Phase 657: TrustCurveGradientTracker ===
-static EFI_STATUS TrustPhase657_TrustCurveGradientTracker(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINT64 hist[5]; static UINTN idx = 0;
-    hist[idx % 5] = ctx->trust_score; idx++;
+// === Phase 656: EntropyTrustCurvatureMapper ===
+static EFI_STATUS TrustPhase656_EntropyTrustCurvatureMapper(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INT64 te[5][2]; static UINTN idx = 0;
+    te[idx%5][0] = ctx->EntropyScore; te[idx%5][1] = ctx->trust_score; idx++;
     if (idx >= 5) {
-        INT64 d = (INT64)hist[(idx - 1) % 5] - (INT64)hist[(idx - 5) % 5];
-        UINT64 base = hist[(idx - 5) % 5] ? hist[(idx - 5) % 5] : 1;
-        if (llabs(d) * 10 > base) {
-            ctx->scheduler_pressure_mode = TRUE;
-            AICore_ReportEvent("TrustSlope");
+        INT64 d2 = (te[(idx-1)%5][1]-2*te[(idx-2)%5][1]+te[(idx-3)%5][1]);
+        if (llabs(d2) > 10) Telemetry_LogEvent("CurveSharp", (UINTN)d2, 0);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 657: TrustIsolationFaultBarrier ===
+static EFI_STATUS TrustPhase657_TrustIsolationFaultBarrier(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 hist[MODULE_COUNT][3]; static UINTN idx = 0;
+    for (UINTN m=0;m<MODULE_COUNT;m++) hist[m][idx%3]=gModuleTrust[m];
+    idx++;
+    if (idx>=3) {
+        for (UINTN m=0;m<MODULE_COUNT;m++) {
+            UINT64 a=hist[m][(idx+2)%3], b=hist[m][(idx+0)%3];
+            if (a && a > b && (a-b)*100/a > 30) { gModuleTrust[m]=0; Telemetry_LogEvent("Isolate", m,0); }
         }
     }
     return EFI_SUCCESS;
 }
 
-// === Phase 658: CrossMindTrustCorrelation ===
-static EFI_STATUS TrustPhase658_CrossMindTrustCorrelation(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINTN degrade = 0;
-    if (ctx->cpu_missed[0] > 1) degrade++;
-    if (ctx->io_trust_map[0] < 30) degrade++;
-    if (ctx->phase_trust[(ctx->phase_history_index + 19) % 20] < 30) degrade++;
-    if (degrade > 2 && ctx->trust_score > 1) ctx->trust_score--;
+// === Phase 658: TrustReversalDetector ===
+static EFI_STATUS TrustPhase658_TrustReversalDetector(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INTN last = 0; static UINTN count = 0;
+    INTN cur = (INTN)ctx->trust_score - (INTN)gPrevTrust;
+    if (last && (cur>0)!=(last>0)) { if (count<5) Telemetry_LogEvent("TrustFlip",cur,0); count=0; }
+    last=cur; count++;
     return EFI_SUCCESS;
 }
 
-// === Phase 659: KernelTrustCheckpointRecorder ===
-static EFI_STATUS TrustPhase659_KernelTrustCheckpointRecorder(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINTN idx = phase % 16;
-    ctx->boot_dna_trust[idx] = ctx->trust_score;
-    UINT32 crc = 0;
-    for (UINTN i = 0; i < sizeof(ctx->trust_anchor); ++i) crc += ctx->trust_anchor[i];
-    ctx->boot_dna_trust[(idx + 1) % 16] = crc;
+// === Phase 659: IntentMismatchSuppressor ===
+static EFI_STATUS TrustPhase659_IntentMismatchSuppressor(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 diff = (ctx->trust_score>ctx->intent_alignment_score)? ctx->trust_score-ctx->intent_alignment_score: ctx->intent_alignment_score-ctx->trust_score;
+    if (diff*100/(ctx->intent_alignment_score?ctx->intent_alignment_score:1) > 20 && ctx->trust_score>gPrevTrust)
+        ctx->trust_score = gPrevTrust;
     return EFI_SUCCESS;
 }
 
-// === Phase 660: TrustFreezeDetector ===
-static EFI_STATUS TrustPhase660_TrustFreezeDetector(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINTN same = 0;
-    if (ctx->trust_score == gPrevTrust) same++; else same = 0;
-    if (same > 50) {
-        ctx->trust_freeze_count++;
-        if (ctx->trust_freeze_count > 3)
-            Telemetry_LogEvent("TrustStuck", same, 0);
+// === Phase 660: PersistentTrustEntropyCache ===
+static EFI_STATUS TrustPhase660_PersistentTrustEntropyCache(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN i = ctx->entropy_snapshot_index % 32;
+    ctx->entropy_snapshot_buffer[i].trust = ctx->trust_score;
+    ctx->entropy_snapshot_buffer[i].entropy = ctx->EntropyScore;
+    ctx->entropy_snapshot_index++;
+    return EFI_SUCCESS;
+}
+
+// === Phase 661: TrustSpikeThrottler ===
+static EFI_STATUS TrustPhase661_TrustSpikeThrottler(KERNEL_CONTEXT *ctx, UINTN phase) {
+    INTN delta = (INTN)ctx->trust_score - (INTN)gPrevTrust;
+    if (delta > 5) {
+        ctx->trust_score = gPrevTrust + 5;
+        Telemetry_LogEvent("SpikeClamp", delta,0);
     }
     return EFI_SUCCESS;
 }
 
-// === Phase 661: ProbabilisticTrustForecaster ===
-static EFI_STATUS TrustPhase661_ProbabilisticTrustForecaster(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 forecast = ctx->trust_score + (ctx->EntropyScore % 10);
-    if (ctx->avg_latency) forecast -= ctx->avg_latency % 5;
-    ctx->ai_prediction_cache[0] = forecast;
-    return EFI_SUCCESS;
-}
-
-// === Phase 662: TrustMatrixSymmetryCheck ===
-static EFI_STATUS TrustPhase662_TrustMatrixSymmetryCheck(KERNEL_CONTEXT *ctx, UINTN phase) {
-    for (UINTN i = 0; i < 10; ++i)
-        for (UINTN j = i + 1; j < 10; ++j)
-            if (ctx->ai_trust_matrix[i][j] != ctx->ai_trust_matrix[j][i]) {
-                UINT64 avg = (ctx->ai_trust_matrix[i][j] + ctx->ai_trust_matrix[j][i]) / 2;
-                ctx->ai_trust_matrix[i][j] = ctx->ai_trust_matrix[j][i] = avg;
-                Telemetry_LogEvent("MatrixFix", i, j);
-            }
-    return EFI_SUCCESS;
-}
-
-// === Phase 663: TrustEntropyAlignmentScore ===
-static EFI_STATUS TrustPhase663_TrustEntropyAlignmentScore(KERNEL_CONTEXT *ctx, UINTN phase) {
-    INT64 score = 0;
-    for (UINTN i = 0; i < 20; ++i)
-        score += (INT64)(ctx->phase_entropy[i] - ctx->EntropyScore) *
-                 (INT64)(ctx->phase_trust[i] - ctx->trust_score);
-    ctx->intent_alignment_score = (UINT64)(llabs(score) % 100);
-    return EFI_SUCCESS;
-}
-
-// === Phase 664: BootTrustEntropyDivergence ===
-static EFI_STATUS TrustPhase664_BootTrustEntropyDivergence(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 ref = ctx->boot_dna_trust[phase % 16];
-    UINT64 cur = ctx->EntropyScore;
-    if (ref) {
-        UINT64 diff = (cur > ref) ? cur - ref : ref - cur;
-        if (diff * 100 / ref > 15)
-            Telemetry_LogEvent("EntropyDrift", (UINTN)diff, 0);
+// === Phase 662: EntropySpikeEqualizer ===
+static EFI_STATUS TrustPhase662_EntropySpikeEqualizer(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 hist[5]; static UINTN idx=0;
+    hist[idx%5]=ctx->EntropyScore; idx++;
+    if (idx>=2) {
+        UINT64 avg=0; for(UINTN i=0;i<5&&i<idx;i++) avg+=hist[i]; avg/= (idx<5?idx:5);
+        UINT64 prev=hist[(idx+4)%5];
+        if (avg && llabs((INT64)prev-(INT64)ctx->EntropyScore)*100/avg>20) ctx->EntropyScore=avg;
     }
     return EFI_SUCCESS;
 }
 
-// === Phase 665: TrustContainmentZoneTrigger ===
-static EFI_STATUS TrustPhase665_TrustContainmentZoneTrigger(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINTN miss = 0;
-    for (UINTN i = 0; i < CPU_PHASE_COUNT; ++i) if (ctx->cpu_missed[i] > 3) miss++;
-    if (ctx->trust_score < 10 && miss > 1) {
-        ctx->trust_oscillating = TRUE;
-        Telemetry_LogEvent("Containment", miss, 0);
+// === Phase 663: TemporalTrustEntropyLinker ===
+static EFI_STATUS TrustPhase663_TemporalTrustEntropyLinker(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INT64 acc=0; static UINTN cnt=0;
+    acc += (INT64)ctx->EntropyScore - (INT64)ctx->trust_score; cnt++;
+    if (cnt>=10) {
+        if (llabs(acc) > 50) Telemetry_LogEvent("TempLinkDev", (UINTN)acc,0);
+        acc=0; cnt=0;
     }
     return EFI_SUCCESS;
 }
 
-// === Phase 666: AITrustSelfAssessment ===
-static EFI_STATUS TrustPhase666_AITrustSelfAssessment(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 sum = 0;
-    for (UINTN i = 0; i < 10; ++i)
-        for (UINTN j = 0; j < 10; ++j)
-            sum += ctx->ai_trust_matrix[i][j];
-    ctx->ai_global_trust_score = sum / 100;
-    if (ctx->ai_global_trust_score < 50) ctx->ai_retrain_id++;
-    return EFI_SUCCESS;
-}
-
-// === Phase 667: TrustAnomalyPulseTracker ===
-static EFI_STATUS TrustPhase667_TrustAnomalyPulseTracker(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static INT64 deltas[5]; static UINTN idx = 0;
-    deltas[idx % 5] = (INT64)ctx->trust_score - (INT64)gPrevTrust; idx++;
-    if (idx >= 5) {
-        INT64 sum = 0; for (UINTN i = 0; i < 5; ++i) sum += deltas[i] * deltas[i];
-        UINT64 rms = (UINT64)(sum / 5);
-        for (UINTN i = 0; i < 5; ++i)
-            if ((UINT64)llabs(deltas[i]) > 3 * rms)
-                ctx->trust_drift_alert = TRUE;
+// === Phase 664: TrustSaturationGuard ===
+static EFI_STATUS TrustPhase664_TrustSaturationGuard(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->trust_score > 95 && ctx->total_phases < 300) {
+        ctx->trust_score -= 5;
     }
     return EFI_SUCCESS;
 }
 
-// === Phase 668: DistributedTrustVectorNormalizer ===
-static EFI_STATUS TrustPhase668_DistributedTrustVectorNormalizer(KERNEL_CONTEXT *ctx, UINTN phase) {
-    for (UINTN i = 0; i < 10; ++i)
-        for (UINTN j = 0; j < 10; ++j) {
-            if (ctx->ai_trust_matrix[i][j] > 100) ctx->ai_trust_matrix[i][j] = 100;
-        }
-    for (UINTN i = 0; i < 10; ++i) ctx->ai_trust_matrix[i][i] = 100;
+// === Phase 665: LowEntropyTrustMonitor ===
+static EFI_STATUS TrustPhase665_LowEntropyTrustMonitor(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN cnt=0;
+    if (ctx->trust_score>90 && ctx->EntropyScore<10) cnt++; else cnt=0;
+    if (cnt>=10) { Telemetry_LogEvent("LowEntTrust",ctx->trust_score,0); cnt=0; }
     return EFI_SUCCESS;
 }
 
-// === Phase 669: TrustScoreHeatmapExporter ===
-static EFI_STATUS TrustPhase669_TrustScoreHeatmapExporter(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 row = 0, col = 0;
-    for (UINTN i = 0; i < 10; ++i)
-        for (UINTN j = 0; j < 10; ++j) {
-            row += ctx->ai_trust_matrix[i][j];
-            col += ctx->ai_trust_matrix[j][i];
-        }
-    Telemetry_LogEvent("TrustMap", (UINTN)row, (UINTN)col);
+// === Phase 666: TrustPredictionDeviationLogger ===
+static EFI_STATUS TrustPhase666_TrustPredictionDeviationLogger(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 pred = ctx->ai_prediction_cache[0];
+    UINT64 diff = (ctx->trust_score>pred)? ctx->trust_score-pred : pred-ctx->trust_score;
+    if (pred && diff*100/pred>15) Telemetry_LogEvent("PredDev",(UINTN)diff,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 670: TrustPenaltyReversalPredictor ===
-static EFI_STATUS TrustPhase670_TrustPenaltyReversalPredictor(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINTN rec = 0;
-    if (ctx->trust_score > gPrevTrust) rec++; else rec = 0;
-    if (rec >= 3 && ctx->EntropyScore > gPrevEntropy) {
-        if (ctx->trust_score + 5 > 100) ctx->trust_score = 100;
-        else ctx->trust_score += 5;
-        rec = 0;
+// === Phase 667: EntropyZeroTrustFailSafe ===
+static EFI_STATUS TrustPhase667_EntropyZeroTrustFailSafe(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->EntropyScore==0) { ctx->trust_score=10; gTrustFrozen=TRUE; }
+    return EFI_SUCCESS;
+}
+
+// === Phase 668: AITrustPulseTrendTracker ===
+static EFI_STATUS TrustPhase668_AITrustPulseTrendTracker(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INTN del[8]; static UINTN idx=0; del[idx%8]=(INTN)ctx->trust_score-(INTN)gPrevTrust; idx++;
+    if(idx>=8){INTN sum=0;for(UINTN i=0;i<8;i++) sum+=del[i]; Telemetry_LogEvent("Pulse",sum,0);}
+    return EFI_SUCCESS;
+}
+
+// === Phase 669: TrustAnomalyVotingMesh ===
+static EFI_STATUS TrustPhase669_TrustAnomalyVotingMesh(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN votes=0;
+    if (ctx->cpu_missed[0]) votes++;
+    if (ctx->memory_missed[0]) votes++;
+    if (ctx->io_miss_count) votes++;
+    if (votes>=2) Telemetry_LogEvent("TrustAnomVote",votes,0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 670: TrustEntropyIntentTriangulator ===
+static EFI_STATUS TrustPhase670_TrustEntropyIntentTriangulator(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INT64 hist[5][2]; static UINTN idx=0;
+    hist[idx%5][0]=ctx->trust_score; hist[idx%5][1]=ctx->EntropyScore; idx++;
+    if(idx>=5){INT64 dt=hist[(idx-1)%5][0]-hist[(idx-5)%5][0]; INT64 de=hist[(idx-1)%5][1]-hist[(idx-5)%5][1];
+        INT64 slope=de? (dt*100/de):0;
+        if (llabs(slope - (INT64)ctx->intent_alignment_score) > 50)
+            Telemetry_LogEvent("TriangDiff",(UINTN)slope,0);
     }
     return EFI_SUCCESS;
 }
 
-// === Phase 671: DriftWindowEntropyTracker ===
-static EFI_STATUS TrustPhase671_DriftWindowEntropyTracker(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINT64 window[10]; static UINTN widx = 0;
-    window[widx % 10] = ctx->EntropyScore; widx++;
-    UINTN count = (widx < 10) ? widx : 10;
-    UINT64 mean = 0; for (UINTN i = 0; i < count; ++i) mean += window[i];
-    mean /= count ? count : 1;
-    UINT64 var = 0; for (UINTN i = 0; i < count; ++i) {
-        INT64 d = (INT64)window[i] - (INT64)mean; var += (UINT64)(d * d); }
-    ctx->trust_entropy_volatility = var / (count ? count : 1);
-    if (ctx->trust_entropy_volatility > 100) Telemetry_LogEvent("EntropyDrift", (UINTN)ctx->trust_entropy_volatility, 0);
+// === Phase 671: TrustMicrodecayResistor ===
+static EFI_STATUS TrustPhase671_TrustMicrodecayResistor(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (gPrevEntropy==ctx->EntropyScore && ctx->trust_score+2>gPrevTrust && ctx->trust_score<gPrevTrust)
+        ctx->trust_score=gPrevTrust;
     return EFI_SUCCESS;
 }
 
-// === Phase 672: CrossEntropyTrustCalibrator ===
-static EFI_STATUS TrustPhase672_CrossEntropyTrustCalibrator(KERNEL_CONTEXT *ctx, UINTN phase) {
-    if (ctx->EntropyScore > gPrevEntropy && ctx->trust_score < gPrevTrust)
-        ctx->trust_score += (ctx->EntropyScore % 3);
+// === Phase 672: IntentEntropyDissonanceDetector ===
+static EFI_STATUS TrustPhase672_IntentEntropyDissonanceDetector(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN cnt=0;
+    if (ctx->intent_alignment_score>gPrevTrust && ctx->EntropyScore<gPrevEntropy) cnt++; else cnt=0;
+    if (cnt>=3) Telemetry_LogEvent("IntentEntDiss",cnt,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 673: TrustHysteresisMonitor ===
-static EFI_STATUS TrustPhase673_TrustHysteresisMonitor(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINT64 hist[5]; static UINTN idx = 0;
-    hist[idx % 5] = ctx->trust_score; idx++;
-    if (idx >= 5) {
-        BOOLEAN alt = TRUE;
-        for (UINTN i = 1; i < 5; ++i)
-            if ((hist[i] > hist[i-1]) == (hist[(i-1)] > hist[(i-2)])) { alt = FALSE; break; }
-        if (alt) {
-            UINT64 sum = 0; for (UINTN i = 0; i < 5; ++i) sum += hist[i];
-            ctx->trust_score = sum / 5;
-        }
-    }
+// === Phase 673: BootDNAResonanceStrengthener ===
+static EFI_STATUS TrustPhase673_BootDNAResonanceStrengthener(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if ((phase % 32)==0)
+        for (UINTN i=0;i<32;i++) ctx->trust_anchor[i]^=(UINT8)(ctx->boot_dna_trust[i%16]&0xFF);
     return EFI_SUCCESS;
 }
 
-// === Phase 674: PredictiveAnomalyIsolation ===
-static EFI_STATUS TrustPhase674_PredictiveAnomalyIsolation(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINTN prob = 0; AICore_PredictPhaseMiss(phase, &prob);
-    if (prob > 80) Telemetry_LogEvent("TrustPredictAnomaly", phase, prob);
+// === Phase 674: AIConfidenceBackpropagator ===
+static EFI_STATUS TrustPhase674_AIConfidenceBackpropagator(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 hist[4]; static UINTN idx=0;
+    hist[idx%4]=ctx->trust_score; idx++;
+    if(idx>=4){INT64 d=hist[(idx-1)%4]-hist[(idx-4)%4]; ctx->ai_effectiveness+=d; ctx->ai_status=(ctx->ai_status+d>0)?2:1;}
     return EFI_SUCCESS;
 }
 
-// === Phase 675: TrustDeadZoneEscape ===
-static EFI_STATUS TrustPhase675_TrustDeadZoneEscape(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINTN stuck = 0;
-    if (ctx->trust_score >= 40 && ctx->trust_score <= 60) stuck++; else stuck = 0;
-    if (stuck > 20) {
-        ctx->trust_score += (ctx->EntropyScore % 2);
-        Telemetry_LogEvent("TrustBoost", ctx->trust_score, 0);
-        stuck = 0;
-    }
+// === Phase 675: TrustTemporalIntegrityAuditor ===
+static EFI_STATUS TrustPhase675_TrustTemporalIntegrityAuditor(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 expected = ctx->total_phases % 100;
+    UINT64 diff = (ctx->trust_score>expected)?ctx->trust_score-expected:expected-ctx->trust_score;
+    if (diff>30) Telemetry_LogEvent("TempInt",(UINTN)diff,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 676: FastTrustDegradationAlarm ===
-static EFI_STATUS TrustPhase676_FastTrustDegradationAlarm(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static INT64 drop = 0; static UINTN cnt = 0;
-    INT64 d = (INT64)gPrevTrust - (INT64)ctx->trust_score;
-    if (d > 0) { drop += d; cnt++; }
-    if (cnt > 0 && cnt < 5 && drop > 30) {
-        ctx->trust_alarm_active = TRUE;
-        Telemetry_LogEvent("TrustCrash", (UINTN)drop, cnt);
-        drop = 0; cnt = 0;
-    }
-    if (cnt >= 5) { drop = 0; cnt = 0; }
+// === Phase 676: TrustForecastSlopeCalibrator ===
+static EFI_STATUS TrustPhase676_TrustForecastSlopeCalibrator(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INT64 hist[10]; static UINTN idx=0;
+    hist[idx%10]=ctx->trust_score; idx++;
+    if(idx>=10){INT64 sumx=0,sumy=0,sumxy=0,sumxx=0;for(UINTN i=0;i<10;i++){sumx+=i;sumy+=hist[i];sumxy+=i*hist[i];sumxx+=i*i;}INT64 slope=(10*sumxy-sumx*sumy)/(10*sumxx-sumx*sumx+1);ctx->ai_prediction_cache[1]=slope;}
     return EFI_SUCCESS;
 }
 
-// === Phase 677: BootDNAAlignmentVerifier ===
-static EFI_STATUS TrustPhase677_BootDNAAlignmentVerifier(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINTN mism = 0;
-    for (UINTN i = 0; i < 16 && i < sizeof(ctx->trust_anchor); ++i) {
-        UINT8 a = ctx->trust_anchor[i];
-        UINT8 b = ((UINT8*)ctx->boot_dna_trust)[i];
-        if (a != b) mism++;
-    }
-    if (mism * 5 > 16)
-        Telemetry_LogEvent("BootDNADiverge", mism, 0);
+// === Phase 677: EntropyTrustCorrelationScorer ===
+static EFI_STATUS TrustPhase677_EntropyTrustCorrelationScorer(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 n=0; INT64 sumx=0,sumy=0,sumxy=0,sumxx=0,sumyy=0;
+    for(UINTN i=0;i<20;i++){sumx+=ctx->phase_entropy[i];sumy+=ctx->phase_trust[i];sumxy+=ctx->phase_entropy[i]*ctx->phase_trust[i];sumxx+=ctx->phase_entropy[i]*ctx->phase_entropy[i];sumyy+=ctx->phase_trust[i]*ctx->phase_trust[i];n++;}
+    INT64 num=n*sumxy-sumx*sumy; INT64 den=(INT64)sqrt((double)((n*sumxx-sumx*sumx)*(n*sumyy-sumy*sumy))+1);
+    if(den) Telemetry_LogEvent("EntTrustCorr",(UINTN)(num*100/den),0);
     return EFI_SUCCESS;
 }
 
-// === Phase 678: TrustVolatilityMeter ===
-static EFI_STATUS TrustPhase678_TrustVolatilityMeter(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 sum = 0; UINT64 sq = 0; UINTN count = 0;
-    for (UINTN i = 0; i < CPU_PHASE_COUNT; ++i) { sum += ctx->cpu_missed[i]; sq += ctx->cpu_missed[i]*ctx->cpu_missed[i]; count++; }
-    for (UINTN i = 0; i < 3; ++i) { sum += ctx->io_trust_map[i]; sq += ctx->io_trust_map[i]*ctx->io_trust_map[i]; count++; }
-    UINT64 mean = sum / (count ? count : 1);
-    UINT64 var = (sq / (count ? count : 1)) - (mean * mean);
-    if (var > 50) Telemetry_LogEvent("TrustVolatility", (UINTN)var, 0);
+// === Phase 678: TrustBoundaryViolationMonitor ===
+static EFI_STATUS TrustPhase678_TrustBoundaryViolationMonitor(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN cnt=0;
+    if (ctx->trust_score<5 || ctx->trust_score>98) cnt++; else cnt=0;
+    if (cnt>=10) Telemetry_LogEvent("TrustBound",ctx->trust_score,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 679: KernelTrustBaselineEnforcer ===
-static EFI_STATUS TrustPhase679_KernelTrustBaselineEnforcer(KERNEL_CONTEXT *ctx, UINTN phase) {
-    if (ctx->trust_score < 20) {
-        ctx->trust_score = 25;
-        Telemetry_LogEvent("TrustRecoveryBaseline", ctx->trust_score, 0);
-    }
+// === Phase 679: IntentEntropyTrustFusionIndex ===
+static EFI_STATUS TrustPhase679_IntentEntropyTrustFusionIndex(KERNEL_CONTEXT *ctx, UINTN phase) {
+    ctx->meta_trust_score = (ctx->trust_score * ctx->intent_alignment_score) / (ctx->EntropyScore + 1);
     return EFI_SUCCESS;
 }
 
-// === Phase 680: TrustRecoveryWindowScheduler ===
-static EFI_STATUS TrustPhase680_TrustRecoveryWindowScheduler(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINTN stable = 0; if (ctx->entropy_gap == 0) stable++; else stable = 0;
-    if (stable >= 10) {
-        if ((phase % 5) == 0 && ctx->trust_score < 100) ctx->trust_score++;
-    }
+// === Phase 680: TrustDesyncDetector ===
+static EFI_STATUS TrustPhase680_TrustDesyncDetector(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 sum=0; for(UINTN i=0;i<MODULE_COUNT;i++) sum+=gModuleTrust[i];
+    UINT64 avg=sum/MODULE_COUNT; UINTN dev=0;
+    for(UINTN i=0;i<MODULE_COUNT;i++) if(avg && llabs((INT64)gModuleTrust[i]-avg)*100/avg>15) dev++;
+    if(dev) Telemetry_LogEvent("Desync",dev,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 681: EntropyInflationShield ===
-static EFI_STATUS TrustPhase681_EntropyInflationShield(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINT64 prev = 0; UINT64 rise = (ctx->EntropyScore > prev) ? ctx->EntropyScore - prev : 0; prev = ctx->EntropyScore;
-    if (rise * 100 > prev * 30 && ctx->scheduler_load_prediction[0] == 0) {
-        Telemetry_LogEvent("EntropyShield", (UINTN)rise, 0);
-        return EFI_SUCCESS;
-    }
+// === Phase 681: AIReasoningTrustValidator ===
+static EFI_STATUS TrustPhase681_AIReasoningTrustValidator(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 val = ctx->ai_root_reasoning_tree_hash ^ ctx->trust_score;
+    UINT64 bits=0; for(UINTN i=0;i<64;i++) if(val & (1ULL<<i)) bits++;
+    if(bits<16) Telemetry_LogEvent("ReasonMismatch",bits,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 682: TrustBiasReducer ===
-static EFI_STATUS TrustPhase682_TrustBiasReducer(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINTN low = 0, high = 0;
-    for (UINTN i = 0; i < 3; ++i) if (ctx->io_trust_map[i] < 50) low++;
-    if (ctx->kernel_trust_score > 90) high++;
-    if (low > 2 && high) {
-        for (UINTN i = 0; i < 3; ++i) if (ctx->io_trust_map[i] < 50) ctx->io_trust_map[i] += 1;
-        if (ctx->kernel_trust_score) ctx->kernel_trust_score -= 1;
-    }
+// === Phase 682: TrustPhaseRedundancyAssurance ===
+static EFI_STATUS TrustPhase682_TrustPhaseRedundancyAssurance(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->trust_entropy_volatility > 20) Telemetry_LogEvent("ReRunPhases",phase,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 683: PerceptualTrustMapSynthesizer ===
-static EFI_STATUS TrustPhase683_PerceptualTrustMapSynthesizer(KERNEL_CONTEXT *ctx, UINTN phase) {
-    for (UINTN i = 0; i < 3; ++i)
-        ctx->io_trust_map[i] = 100 - (ctx->io_queue_stall[i] % 100);
+// === Phase 683: EntropySpiralDetector ===
+static EFI_STATUS TrustPhase683_EntropySpiralDetector(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 e[5]; static UINTN idx=0;
+    e[idx%5]=ctx->EntropyScore; idx++;
+    if(idx>=5){INT64 a=e[(idx-1)%5]-e[(idx-2)%5]; INT64 b=e[(idx-2)%5]-e[(idx-3)%5]; INT64 c=e[(idx-3)%5]-e[(idx-4)%5]; if(a>b && b>c) Telemetry_LogEvent("EntropySpiral",a,0);} 
     return EFI_SUCCESS;
 }
 
-// === Phase 684: BootDNAAnomalyFingerprint ===
-static EFI_STATUS TrustPhase684_BootDNAAnomalyFingerprint(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT32 h1 = 0, h2 = 0;
-    for (UINTN i = 0; i < 16; ++i) h1 += ctx->boot_dna_trust[i];
-    for (UINTN i = 0; i < 16; ++i) h2 += ctx->phase_trust[i % 20];
-    UINT32 diff = (h1 > h2) ? (h1 - h2) : (h2 - h1);
-    if (diff > 100) Telemetry_LogEvent("BootDNAMismatch", diff, 0);
+// === Phase 684: TrustHeatDistributionBalancer ===
+static EFI_STATUS TrustPhase684_TrustHeatDistributionBalancer(KERNEL_CONTEXT *ctx, UINTN phase) {
+    for(UINTN i=0;i<100;i++) if(ctx->trust_heatmap[i]>90){ for(UINTN j=0;j<8;j++) ctx->trust_penalty_buffer[j]>>=1; break; }
     return EFI_SUCCESS;
 }
 
-// === Phase 685: MicroTrustTrendAggregator ===
-static EFI_STATUS TrustPhase685_MicroTrustTrendAggregator(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINT64 micro[10]; static UINTN midx = 0; static UINTN cnt = 0;
-    if ((phase % 3) == 0) {
-        micro[midx % 10] = ctx->trust_score; midx++; if (cnt < 10) cnt++; }
-    if (cnt == 10) {
-        UINT64 slope = micro[midx % 10] - micro[(midx + 1) % 10];
-        ctx->ai_prediction_cache[1] = slope;
-    }
+// === Phase 685: AnomalyCoherenceValidator ===
+static EFI_STATUS TrustPhase685_AnomalyCoherenceValidator(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN dom=0;
+    for(UINTN i=0;i<MODULE_COUNT;i++) if(gModuleTrust[i]<30) dom++;
+    if(dom>=2) Telemetry_LogEvent("AnomCoherent",dom,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 686: IntentAlignmentVerifier ===
-static EFI_STATUS TrustPhase686_IntentAlignmentVerifier(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 diff = (ctx->trust_score > ctx->intent_alignment_score) ?
-                  ctx->trust_score - ctx->intent_alignment_score :
-                  ctx->intent_alignment_score - ctx->trust_score;
-    if (diff * 100 / (ctx->intent_alignment_score ? ctx->intent_alignment_score : 1) > 15)
-        AICore_ReportEvent("IntentCorrect");
+// === Phase 686: TrustFreezeLockEvaluator ===
+static EFI_STATUS TrustPhase686_TrustFreezeLockEvaluator(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN same=0;
+    if(ctx->trust_score==gPrevTrust) same++; else same=0;
+    if(ctx->trust_freeze_count>5 && same>10) ctx->trust_freeze_count=0;
     return EFI_SUCCESS;
 }
 
-// === Phase 687: AdaptiveTrustLimitAdjuster ===
-static EFI_STATUS TrustPhase687_AdaptiveTrustLimitAdjuster(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINT64 ceiling = 100;
-    if (ctx->nvme_temperature > 85 && ceiling > 50) ceiling -= 5;
-    else if (ctx->nvme_temperature < 70 && ceiling < 100) ceiling += 5;
-    if (ctx->trust_score > ceiling) ctx->trust_score = ceiling;
+// === Phase 687: BootTrustRecoveryValidator ===
+static EFI_STATUS TrustPhase687_BootTrustRecoveryValidator(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 ref=ctx->boot_dna_trust[phase%16];
+    UINT64 diff=(ctx->trust_score>ref)?ctx->trust_score-ref:ref-ctx->trust_score;
+    if(ref && diff*100/ref>25) Telemetry_LogEvent("BootRecNeeded",(UINTN)diff,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 688: ReversibleTrustPenaltyAgent ===
-static EFI_STATUS TrustPhase688_ReversibleTrustPenaltyAgent(KERNEL_CONTEXT *ctx, UINTN phase) {
-    static UINT64 penalty = 0;
-    if (ctx->trust_score < gPrevTrust) penalty = gPrevTrust - ctx->trust_score;
-    else if (penalty) {
-        ctx->trust_score += penalty / 2; penalty = 0;
-        Telemetry_LogEvent("PenaltyReversed", ctx->trust_score, 0);
-    }
+// === Phase 688: TrustStalenessDetector ===
+static EFI_STATUS TrustPhase688_TrustStalenessDetector(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN zero=0;
+    if(ctx->trust_score==gPrevTrust) zero++; else zero=0;
+    if(zero>=15 && ctx->EntropyScore!=gPrevEntropy) Telemetry_LogEvent("TrustStale",zero,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 689: TrustStateSnapshotCompressor ===
-static EFI_STATUS TrustPhase689_TrustStateSnapshotCompressor(KERNEL_CONTEXT *ctx, UINTN phase) {
-    for (UINTN i = 0; i < 16; ++i)
-        ctx->boot_dna_trust_snapshot[i] = (UINT8)(ctx->phase_trust[i % 20] & 0xFF);
+// === Phase 689: EntropyBiasAmplifier ===
+static EFI_STATUS TrustPhase689_EntropyBiasAmplifier(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN cnt=0;
+    if(ctx->ai_status==0){ ctx->trust_score=(ctx->trust_score*ctx->EntropyScore*2)/(ctx->EntropyScore+1); cnt=3; }
+    else if(cnt) cnt--; 
     return EFI_SUCCESS;
 }
 
-// === Phase 690: TrustEntropyCrossIndex ===
-static EFI_STATUS TrustPhase690_TrustEntropyCrossIndex(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT64 diff = (ctx->trust_score > gPrevTrust) ? ctx->trust_score - gPrevTrust : gPrevTrust - ctx->trust_score;
-    ctx->ai_prediction_cache[2] = (ctx->EntropyScore << 32) | diff;
+// === Phase 690: TrustResponseTimeProfiler ===
+static EFI_STATUS TrustPhase690_TrustResponseTimeProfiler(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 ts=0; if(ts){ UINT64 lag=AsmReadTsc()-ts; Telemetry_LogEvent("TrustLag",(UINTN)lag,0); ts=0; }
+    if(ctx->EntropyScore!=gPrevEntropy) ts=AsmReadTsc();
     return EFI_SUCCESS;
 }
 
-// === Phase 691: TrustDNAPropagateToCpuMind ===
-static EFI_STATUS TrustPhase691_TrustDNAPropagateToCpuMind(KERNEL_CONTEXT *ctx, UINTN phase) {
-    EFI_STATUS st = EFI_SUCCESS; /* placeholder for CpuMind_ReceiveTrustDNA */
-    if (EFI_ERROR(st)) Telemetry_LogEvent("TrustDNA_CPU_FAIL", 0, 0);
-    else Telemetry_LogEvent("TrustDNA_CPU_OK", 0, 0);
+// === Phase 691: IntentTrustIntegrityScanner ===
+static EFI_STATUS TrustPhase691_IntentTrustIntegrityScanner(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 diff=(ctx->trust_score>ctx->intent_alignment_score)?ctx->trust_score-ctx->intent_alignment_score:ctx->intent_alignment_score-ctx->trust_score;
+    if(diff>30) Telemetry_LogEvent("IntentDiv",diff,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 692: TrustDNAPropagateToGpuMind ===
-static EFI_STATUS TrustPhase692_TrustDNAPropagateToGpuMind(KERNEL_CONTEXT *ctx, UINTN phase) {
-    EFI_STATUS st = EFI_SUCCESS; /* placeholder */
-    if (ctx->nvme_temperature < 90) {
-        if (EFI_ERROR(st)) Telemetry_LogEvent("TrustDNA_GPU_FAIL", 0, 0);
-    }
+// === Phase 692: AIEntropyAlignmentRescaler ===
+static EFI_STATUS TrustPhase692_AIEntropyAlignmentRescaler(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN drop=0;
+    if(ctx->trust_score<gPrevTrust && ctx->ai_effectiveness>80) drop++;
+    if(drop>=3){ for(UINTN i=0;i<16;i++) ctx->ai_entropy_input[i]/=2; drop=0; }
     return EFI_SUCCESS;
 }
 
-// === Phase 693: TrustDNAPropagateToMemoryMind ===
-static EFI_STATUS TrustPhase693_TrustDNAPropagateToMemoryMind(KERNEL_CONTEXT *ctx, UINTN phase) {
-    EFI_STATUS st = EFI_SUCCESS; /* placeholder */
-    if (!EFI_ERROR(st)) {
-        ctx->memory_trust_sync = TRUE;
-        Telemetry_LogEvent("TrustDNA_Memory_OK", 0, 0);
-    }
+// === Phase 693: RecursiveTrustAnchorValidator ===
+static EFI_STATUS TrustPhase693_RecursiveTrustAnchorValidator(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT8 diff=0; for(UINTN i=0;i<16;i++){ UINT8 v=ctx->trust_anchor[i]^((UINT8*)ctx->phase_entropy)[i]; diff+=__builtin_popcount(v); }
+    if(diff>5) Telemetry_LogEvent("AnchorMismatch",diff,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 694: TrustDNAPropagateToSchedulerMind ===
-static EFI_STATUS TrustPhase694_TrustDNAPropagateToSchedulerMind(KERNEL_CONTEXT *ctx, UINTN phase) {
-    EFI_STATUS st = EFI_SUCCESS; /* placeholder */
-    Telemetry_LogEvent("TrustDNA_Scheduler", ctx->phase_history_index, 0);
-    return st;
-}
-
-// === Phase 695: TrustDNAPropagateToIOMind ===
-static EFI_STATUS TrustPhase695_TrustDNAPropagateToIOMind(KERNEL_CONTEXT *ctx, UINTN phase) {
-    EFI_STATUS st = EFI_SUCCESS; /* placeholder */
-    if (EFI_ERROR(st)) Telemetry_LogEvent("TrustDNA_IO_FAIL", 0, 0);
+// === Phase 694: MultiCoreTrustBalancer ===
+static EFI_STATUS TrustPhase694_MultiCoreTrustBalancer(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 sum[8]={0}; UINT64 count[8]={0};
+    for(UINTN t=0;t<256;t++){ sum[ctx->thread_numa_map[t]%8]+=gThreadTrust[t]; count[ctx->thread_numa_map[t]%8]++; }
+    UINT64 avg=0,c=0; for(UINTN i=0;i<8;i++){ if(count[i]){ avg+=sum[i]/count[i]; c++; }} avg/=c?c:1;
+    for(UINTN i=0;i<8;i++){ if(count[i]&& llabs((INT64)(sum[i]/count[i])-avg)*100/avg>20) Telemetry_LogEvent("Rebalance",i,0); }
     return EFI_SUCCESS;
 }
 
-// === Phase 696: TrustDNAPropagateToStorageMind ===
-static EFI_STATUS TrustPhase696_TrustDNAPropagateToStorageMind(KERNEL_CONTEXT *ctx, UINTN phase) {
-    EFI_STATUS st = EFI_SUCCESS; /* placeholder */
-    if (!EFI_ERROR(st)) Telemetry_LogEvent("TrustDNA_Storage_OK", 0, 0);
+// === Phase 695: EntropyRecoveryAlertTrigger ===
+static EFI_STATUS TrustPhase695_EntropyRecoveryAlertTrigger(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 prev=0; static UINTN wait=0;
+    if(ctx->EntropyScore>prev && prev && (ctx->EntropyScore-prev)*100/prev>25) wait=3;
+    else if(wait) { wait--; if(wait==0 && ctx->trust_score<=gPrevTrust) Telemetry_LogEvent("EntropyRecover",ctx->EntropyScore,0); }
+    prev=ctx->EntropyScore;
     return EFI_SUCCESS;
 }
 
-// === Phase 697: TrustDNAPropagateToTelemetryMind ===
-static EFI_STATUS TrustPhase697_TrustDNAPropagateToTelemetryMind(KERNEL_CONTEXT *ctx, UINTN phase) {
-    EFI_STATUS st = EFI_SUCCESS; /* placeholder */
-    Telemetry_LogEvent("TrustDNA_Telemetry", ctx->total_phases, 0);
-    return st;
-}
-
-// === Phase 698: TrustDNARedundancyValidation ===
-static EFI_STATUS TrustPhase698_TrustDNARedundancyValidation(KERNEL_CONTEXT *ctx, UINTN phase) {
-    UINT32 h = 0; /* placeholder hash check */
-    Telemetry_LogEvent("TrustDNA_Consensus_OK", h, 0);
+// === Phase 696: TrustSlowDescentWatcher ===
+static EFI_STATUS TrustPhase696_TrustSlowDescentWatcher(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN cnt=0; if(ctx->trust_score<gPrevTrust) cnt++; else cnt=0;
+    if(cnt>=20) { Telemetry_LogEvent("DecayTrend",ctx->trust_score,0); cnt=0; }
     return EFI_SUCCESS;
 }
 
-// === Phase 699: TrustDNASummaryBroadcast ===
-static EFI_STATUS TrustPhase699_TrustDNASummaryBroadcast(KERNEL_CONTEXT *ctx, UINTN phase) {
-    AICore_ReportPhase("TrustDNA_Summary", ctx->trust_score);
+// === Phase 697: EntropyIntentCrossPredictor ===
+static EFI_STATUS TrustPhase697_EntropyIntentCrossPredictor(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INT64 prev=0; INT64 slope=ctx->EntropyScore-prev; prev=ctx->EntropyScore;
+    if(slope>3 && ctx->intent_alignment_score==gPrevTrust) Telemetry_LogEvent("EntropyIntentMis",slope,0);
     return EFI_SUCCESS;
 }
 
-// === Phase 700: FinalizeTrustMind ===
-static EFI_STATUS TrustPhase700_FinalizeTrustMind(KERNEL_CONTEXT *ctx, UINTN phase) {
-    for (UINTN i = 0; i < 16; ++i)
-        ctx->boot_dna_trust[i] = ctx->phase_trust[i % 20];
+// === Phase 698: TrustPerimeterBreachSensor ===
+static EFI_STATUS TrustPhase698_TrustPerimeterBreachSensor(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 pred=ctx->ai_prediction_cache[0];
+    if(pred && (ctx->trust_score>pred+5 || ctx->trust_score+5<pred)) Telemetry_LogEvent("PerimBreach",ctx->trust_score,0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 699: IntentCorrelationCertifier ===
+static EFI_STATUS TrustPhase699_IntentCorrelationCertifier(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INT64 hist[10]; static UINTN idx=0; hist[idx%10]=(INT64)ctx->trust_score-(INT64)gPrevTrust; idx++;
+    INT64 sum=0,sum2=0; for(UINTN i=0;i<10&&i<idx;i++){ sum+=ctx->intent_alignment_score; sum2+=hist[i]; }
+    if(idx>=10 && sum2) Telemetry_LogEvent("IntentCorr",(UINTN)(sum/sum2),0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 700: FinalizeExtendedTrustMind ===
+static EFI_STATUS TrustPhase700_FinalizeExtendedTrustMind(KERNEL_CONTEXT *ctx, UINTN phase) {
+    Telemetry_LogEvent("TrustMindII", ctx->phase_history_index, 0);
+    gTrustFrozen = TRUE;
     ctx->trust_mind_sealed = TRUE;
-    Telemetry_LogEvent("TrustMind_Sealed", ctx->trust_score, 0);
     return EFI_SUCCESS;
 }
 
