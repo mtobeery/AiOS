@@ -146,6 +146,26 @@ EFI_STATUS AICore_PredictSuccessRate(UINTN phase_id, UINTN *prob) {
     return EFI_SUCCESS;
 }
 
+EFI_STATUS AICore_ClassifyStoragePhaseUrgency(UINTN metric, UINTN *class_out) {
+    if (!class_out) return EFI_INVALID_PARAMETER;
+    *class_out = metric % 3;
+    Telemetry_LogEvent("StoragePhaseClass", *class_out, metric);
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS AICore_PredictIOEntropyTrend(UINT64 *trend_out) {
+    if (!trend_out) return EFI_INVALID_PARAMETER;
+    *trend_out = AsmReadTsc() & 0xFFFF;
+    Telemetry_LogEvent("IOEntropyTrend", (UINTN)(*trend_out), 0);
+    return EFI_SUCCESS;
+}
+
+UINTN AICore_ScoreStorageMindPerformance(KERNEL_CONTEXT *ctx) {
+    UINTN score = (UINTN)((ctx->EntropyScore & 0xFF) + (Trust_GetCurrentScore() & 0xFF));
+    Telemetry_LogEvent("StorageMindScore", score, 0);
+    return score;
+}
+
 // === Phase 861: BootstrapAICore ===
 EFI_STATUS AICore_InitPhase861_BootstrapAICore(KERNEL_CONTEXT *ctx) {
     ZeroMem(gAiMatrix, sizeof(gAiMatrix));

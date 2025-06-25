@@ -94,6 +94,13 @@ typedef struct {
     UINT64 boot_dna_trust[16];
     UINT64 final_io_summary;
     BOOLEAN io_mind_complete;
+    /* Storage mind fields */
+    UINT64 nvme_bar[4];
+    UINT8  nvme_smart_log[512];
+    UINTN  nvme_temperature;
+    UINTN  nvme_error_count;
+    UINTN  nvme_unsafe_shutdowns;
+    UINT8  storage_phase_class;
     /* Trust mind fields */
     UINT64 kernel_trust_score;
     BOOLEAN trust_ready;
