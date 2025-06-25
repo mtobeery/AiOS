@@ -1,0 +1,61 @@
+#ifndef AI_SELFCODER_H
+#define AI_SELFCODER_H
+
+#include <Uefi.h>
+#include "kernel_shared.h"
+
+EFI_STATUS SelfCoder_InitPhase10000_EnableAutoEvolution(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10001_BootstrapSeedPlanner(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10002_StartGeneratorLoop(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10003_SandboxPhaseExecutor(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10004_DNAApprovalWriteback(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10005_CommitPhaseSet(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10006_AdvisoryConflictResolver(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10007_RollbackStrategyPlanner(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10008_TrustForecastAllocator(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10009_EntropyBudgetIssuer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10010_PredictivePhaseThreadMapper(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10011_MemorySafetyFuzzer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10012_TelemetryPhaseImpactLogger(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10013_LivePhaseEntropyScanner(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10014_AIIntentAnchorGenerator(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10015_StructuralPhasePatternValidator(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10016_AdaptiveRetryScheduler(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10017_GPUDelegateGenerator(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10018_AdvisoryCorrectionLoopback(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10019_PhaseSignatureFingerprinter(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10020_EntropyLeakDetectionAgent(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10021_PhaseBehaviorMapper(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10022_TrustRegressionForecaster(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10023_EntropyOverheadProfiler(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10024_AIIntentionCrosscheckAgent(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10025_RollbackQuorumMonitor(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10026_AdvisoryCollisionChecker(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10027_SelfcoderContextSnapshotter(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10028_MemoryAllocationRationalizer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10029_InstructionEfficiencyScorer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10030_TrustConstrainedAdvisorTuner(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10031_TrustDriftRegulator(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10032_RecursiveEntropyReplayGuard(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10033_IntentAlignmentValidator(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10034_EnergyCostEstimator(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10035_PhaseInstructionMapCompiler(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10036_SandboxTimingStabilizer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10037_PredictiveEntropyAllocator(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10038_InstructionPathConformer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10039_TrustDifferentialAnalyzer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10040_FeedbackLoopDetector(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10041_TrustSanityEnforcer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10042_EntropySpikeSuppressor(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10043_PhaseSimilarityDetector(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10044_PhaseCompactnessOptimizer(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10045_AdvisoryMismatchResolver(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10046_GPUPhaseCostScaler(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10047_InstructionRerankerEngine(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10048_ZeroDayTrapPatternFlagger(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10049_RecursivePhaseAmplificationFilter(KERNEL_CONTEXT *ctx);
+EFI_STATUS SelfCoder_InitPhase10050_DNAConflictResolver(KERNEL_CONTEXT *ctx);
+
+EFI_STATUS SelfCoder_RunAllPhases(KERNEL_CONTEXT *ctx);
+
+#endif // AI_SELFCODER_H
