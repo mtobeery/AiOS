@@ -1,4 +1,4 @@
-// trust_mind.c - AiOS Trust Mind Phases 761-860
+// trust_mind.c - AiOS Trust Mind Phases 451-860
 
 #include "kernel_shared.h"
 #include "telemetry_mind.h"
@@ -13,6 +13,11 @@ static UINTN  gTrustHead = 0;
 static UINT64 gModuleTrust[MODULE_COUNT];
 static UINT64 gThreadTrust[THREAD_COUNT];
 static UINT64 gTrustScore = 50;
+static INT64  gTrustDeltas[8];
+static UINTN  gDeltaIndex = 0;
+static UINT64 gPrevTrust = 50;
+static UINT64 gPrevEntropy = 0;
+static BOOLEAN gTrustFrozen = FALSE;
 
 EFI_STATUS Trust_Reset(void) {
     ZeroMem(gTrustRing, sizeof(gTrustRing));
@@ -46,6 +51,534 @@ void Trust_Transfer(UINTN from, UINTN to, UINTN amount) {
     if (amount == 0) return;
     Trust_AdjustScore(from, -(INTN)amount);
     Trust_AdjustScore(to, (INTN)amount);
+}
+
+// === Phase 451: Trust Heuristic Baseline ===
+static EFI_STATUS TrustPhase_InitBaselineTrust(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < 4; ++i)
+        sum += ctx->boot_dna_trust[i];
+    UINT64 avg = sum / 4;
+    UINTN w = phase % 3;
+    ctx->trust_score = (avg * w) / (w ? w : 1);
+    return EFI_SUCCESS;
+}
+
+// === Phase 452: Trust Entropy Mixer ===
+static EFI_STATUS TrustPhase_MixEntropyIntoTrust(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 mix = AsmReadTsc() ^ ctx->EntropyScore;
+    ctx->trust_score = (mix % 101);
+    return EFI_SUCCESS;
+}
+
+// === Phase 453: Trust Signal Amplifier ===
+static EFI_STATUS TrustPhase_AmplifySignal(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->EntropyScore < 30 && ctx->kernel_trust_score > 80) {
+        if (ctx->trust_score + 5 > 100) ctx->trust_score = 100;
+        else ctx->trust_score += 5;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 454: Trust Anomaly Filter ===
+static EFI_STATUS TrustPhase_FilterAnomaly(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 avg = 0;
+    for (UINTN i = 0; i < 4; ++i)
+        avg += ctx->ai_entropy_vector[i];
+    avg /= 4;
+    if (avg) {
+        UINT64 diff = (ctx->trust_score > avg) ? ctx->trust_score - avg : avg - ctx->trust_score;
+        if (diff * 100 / avg > 20)
+            ctx->trust_score = gPrevTrust + (ctx->trust_score - gPrevTrust) / 2;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 455: Trust Oscillation Detector ===
+static EFI_STATUS TrustPhase_DetectOscillation(KERNEL_CONTEXT *ctx, UINTN phase) {
+    INT64 delta = (INT64)ctx->trust_score - (INT64)gPrevTrust;
+    gTrustDeltas[gDeltaIndex % 8] = delta;
+    gDeltaIndex++;
+    UINTN flips = 0;
+    for (UINTN i = 1; i < 8; ++i)
+        if (gTrustDeltas[i-1] * gTrustDeltas[i] < 0)
+            flips++;
+    if (flips >= 6)
+        ctx->trust_oscillating = TRUE;
+    return EFI_SUCCESS;
+}
+
+// === Phase 456: Trust-Entropy Rebalance Agent ===
+static EFI_STATUS TrustPhase_RebalanceTrustEntropy(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->trust_score > 90 && ctx->EntropyScore < 20) {
+        UINT64 diff = ctx->trust_score - ctx->EntropyScore;
+        ctx->trust_score -= diff / 5;
+    }
+    if (ctx->EntropyScore > 90 && ctx->trust_score < 30) {
+        if (ctx->trust_score + 2 > 100) ctx->trust_score = 100;
+        else ctx->trust_score += 2;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 457: Kernel Trust Signature Validator ===
+static EFI_STATUS TrustPhase_ValidateDNA(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 a = ctx->boot_dna_trust[0];
+    UINT64 b = ctx->boot_dna_trust[1];
+    if (a && llabs((INT64)a - (INT64)b) * 100 / a > 25) {
+        if (ctx->trust_score > 10) ctx->trust_score -= 10;
+        else ctx->trust_score = 0;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 458: Inter-Mind Trust Poller ===
+static EFI_STATUS TrustPhase_PollMindTrusts(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 avg_io = (ctx->io_trust_map[0] + ctx->io_trust_map[1] + ctx->io_trust_map[2]) / 3;
+    UINT64 gpu = ctx->ai_gpu_delegate_ready ? 100 : 50;
+    UINT64 combined = (avg_io + gpu) / 2;
+    ctx->trust_score = (ctx->trust_score + combined) / 2;
+    return EFI_SUCCESS;
+}
+
+// === Phase 459: Trust Drift Analyzer ===
+static EFI_STATUS TrustPhase_AnalyzeDrift(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN idx = ctx->phase_history_index;
+    if (idx >= 3) {
+        UINT64 t0 = ctx->phase_trust[(idx + 19) % 20];
+        UINT64 t1 = ctx->phase_trust[(idx + 18) % 20];
+        UINT64 t2 = ctx->phase_trust[(idx + 17) % 20];
+        UINT64 drift = llabs((INT64)t0 - (INT64)t1) + llabs((INT64)t1 - (INT64)t2);
+        if (drift / 2 > 15) ctx->trust_drift_alert = TRUE;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 460: Trust Sanity Checker ===
+static EFI_STATUS TrustPhase_SanityCheck(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 before = ctx->trust_score;
+    if (ctx->trust_score > 100) ctx->trust_score = 100;
+    if (ctx->trust_score > before) return EFI_SUCCESS;
+    if (before != ctx->trust_score)
+        Telemetry_LogEvent("TrustClamp", (UINTN)before, (UINTN)ctx->trust_score);
+    return EFI_SUCCESS;
+}
+
+// === Phase 461: Historical Trust Curve Logger ===
+static EFI_STATUS TrustPhase_LogTrustCurve(KERNEL_CONTEXT *ctx, UINTN phase) {
+    ctx->phase_trust[ctx->phase_history_index % 20] = ctx->trust_score;
+    ctx->phase_history_index++;
+    return EFI_SUCCESS;
+}
+
+// === Phase 462: Trust Latency Interpolator ===
+static EFI_STATUS TrustPhase_InterpolateLatency(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 avg = (ctx->cpu_elapsed_tsc[1] + ctx->memory_elapsed_tsc[1]) / 2;
+    ctx->phase_latency[ctx->phase_history_index % 20] = avg;
+    return EFI_SUCCESS;
+}
+
+// === Phase 463: Trust Heatmap Generator ===
+static EFI_STATUS TrustPhase_GenerateHeatmap(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN bucket = (ctx->trust_score / 2);
+    if (bucket < 50)
+        ctx->latency_histogram[bucket]++;
+    return EFI_SUCCESS;
+}
+
+// === Phase 464: Trust Score Smoother ===
+static EFI_STATUS TrustPhase_SmoothTrustScore(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 sum = 0; UINTN count = 0;
+    for (UINTN i = 0; i < 5 && i < ctx->phase_history_index; ++i) {
+        sum += ctx->phase_trust[(ctx->phase_history_index + 19 - i) % 20];
+        count++;
+    }
+    if (count) ctx->avg_trust = sum / count;
+    return EFI_SUCCESS;
+}
+
+// === Phase 465: Trust Contention Index Estimator ===
+static EFI_STATUS TrustPhase_EstimateContention(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN count = 0;
+    for (UINTN i = 0; i < 3; ++i)
+        if (ctx->io_trust_map[i] < 40) count++;
+    if (!ctx->ai_gpu_delegate_ready) count++;
+    ctx->contention_index = count;
+    return EFI_SUCCESS;
+}
+
+// === Phase 466: Trust Confidence Band Mapper ===
+static EFI_STATUS TrustPhase_MapConfidenceBand(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->trust_score < 30) ctx->ai_status = 0;
+    else if (ctx->trust_score <= 70) ctx->ai_status = 1;
+    else ctx->ai_status = 2;
+    return EFI_SUCCESS;
+}
+
+// === Phase 467: Phase Entropy-Gap Sync ===
+static EFI_STATUS TrustPhase_SyncEntropyGap(KERNEL_CONTEXT *ctx, UINTN phase) {
+    ctx->entropy_gap = ctx->EntropyScore - (ctx->trust_score / 2);
+    return EFI_SUCCESS;
+}
+
+// === Phase 468: Trust Snapshot Buffer Inserter ===
+static EFI_STATUS TrustPhase_InsertSnapshot(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN idx = ctx->snapshot_index % 64;
+    ctx->snapshot_buffer[idx].core_id = ctx->hotspot_cpu;
+    ctx->snapshot_buffer[idx].task_id = ctx->total_phases;
+    ctx->snapshot_buffer[idx].trust = ctx->trust_score;
+    ctx->snapshot_buffer[idx].latency = ctx->avg_latency;
+    ctx->snapshot_index++;
+    return EFI_SUCCESS;
+}
+
+// === Phase 469: Trust Deviation Analyzer ===
+static EFI_STATUS TrustPhase_AnalyzeDeviation(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->phase_history_index >= 3) {
+        UINT64 a = ctx->phase_trust[(ctx->phase_history_index + 19) % 20];
+        UINT64 b = ctx->phase_trust[(ctx->phase_history_index + 18) % 20];
+        UINT64 c = ctx->phase_trust[(ctx->phase_history_index + 17) % 20];
+        if (a && llabs((INT64)a - (INT64)b) * 100 / a > 25)
+            Telemetry_LogEvent("TrustDev", (UINTN)a, (UINTN)b);
+        else if (b && llabs((INT64)b - (INT64)c) * 100 / b > 25)
+            Telemetry_LogEvent("TrustDev", (UINTN)b, (UINTN)c);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 470: Trust Drift Histogram Updater ===
+static EFI_STATUS TrustPhase_UpdateTrustDriftHistogram(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 diff = (ctx->trust_score > gPrevTrust) ? ctx->trust_score - gPrevTrust : gPrevTrust - ctx->trust_score;
+    UINTN bucket = (diff < 50) ? diff : 49;
+    ctx->latency_histogram[bucket]++;
+    return EFI_SUCCESS;
+}
+
+// === Phase 471: Trust Falloff Resistance Tracker ===
+static EFI_STATUS TrustPhase_TrackFalloffResistance(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->EntropyScore > 90 && ctx->trust_score < 40) {
+        UINT64 rate = ctx->EntropyScore - ctx->trust_score;
+        ctx->entropy_gap = rate;
+        Telemetry_LogEvent("FalloffRate", (UINTN)rate, 0);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 472: Peripheral Trust Differential Mapper ===
+static EFI_STATUS TrustPhase_MapPeripheralTrustDelta(KERNEL_CONTEXT *ctx, UINTN phase) {
+    INT64 delta = (INT64)ctx->io_trust_map[2] - (INT64)ctx->io_trust_map[0];
+    if (delta > 30 && ctx->trust_score > 3) ctx->trust_score -= 3;
+    return EFI_SUCCESS;
+}
+
+// === Phase 473: Anomaly Tolerance Calibration ===
+static EFI_STATUS TrustPhase_CalibrateAnomalyTolerance(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->phase_history_index >= 5) {
+        UINT64 sum = 0;
+        for (UINTN i = 0; i < 5; ++i)
+            sum += ctx->phase_trust[(ctx->phase_history_index + 20 - 1 - i) % 20];
+        UINT64 avg = sum / 5;
+        UINT64 diff = (ctx->trust_score > avg) ? ctx->trust_score - avg : avg - ctx->trust_score;
+        if (avg && diff * 100 / avg < 5)
+            ctx->ai_effectiveness++;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 474: Trust Pulse Width Measurement ===
+static EFI_STATUS TrustPhase_MeasureTrustPulseWidth(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINTN count = 0;
+    if (ctx->trust_score >= ctx->avg_trust - 5 && ctx->trust_score <= ctx->avg_trust + 5)
+        count++;
+    else
+        count = 0;
+    ctx->pulse_count = count;
+    return EFI_SUCCESS;
+}
+
+// === Phase 475: Trust Recovery Booster ===
+static EFI_STATUS TrustPhase_ApplyRecoveryBoost(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->EntropyScore > gPrevEntropy && ctx->trust_score < 60) {
+        ctx->trust_score += 4;
+        if (ctx->trust_score > 100) ctx->trust_score = 100;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 476: Trust Penalty Buffer Shuffler ===
+static EFI_STATUS TrustPhase_ShufflePenaltyBuffer(KERNEL_CONTEXT *ctx, UINTN phase) {
+    for (INTN i = 7; i > 0; --i) {
+        UINTN j = AsmReadTsc() % (i + 1);
+        UINT8 tmp = ctx->trust_penalty_buffer[i];
+        ctx->trust_penalty_buffer[i] = ctx->trust_penalty_buffer[j];
+        ctx->trust_penalty_buffer[j] = tmp;
+    }
+    Telemetry_LogEvent("PenaltyShuffle", ctx->trust_penalty_buffer[0], ctx->trust_penalty_buffer[1]);
+    return EFI_SUCCESS;
+}
+
+// === Phase 477: Trust Entropy Interleave Predictor ===
+static EFI_STATUS TrustPhase_PredictInterleave(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN corr = 0;
+    for (UINTN i = 1; i < 5; ++i) {
+        INT64 de = (INT64)ctx->phase_entropy[(ctx->phase_history_index + 20 - i) % 20] -
+                   (INT64)ctx->phase_entropy[(ctx->phase_history_index + 19 - i) % 20];
+        INT64 dt = (INT64)ctx->phase_trust[(ctx->phase_history_index + 20 - i) % 20] -
+                   (INT64)ctx->phase_trust[(ctx->phase_history_index + 19 - i) % 20];
+        if (de * dt > 0) corr++;
+    }
+    Telemetry_LogEvent("InterleaveCorr", corr * 25, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 478: Trust-Intent Coherence Validator ===
+static EFI_STATUS TrustPhase_ValidateIntentCoherence(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 intent = ctx->intent_alignment_score;
+    UINT64 diff = (ctx->trust_score > intent) ? ctx->trust_score - intent : intent - ctx->trust_score;
+    if (intent && diff * 100 / intent > 20 && ctx->trust_score > 2)
+        ctx->trust_score -= 2;
+    return EFI_SUCCESS;
+}
+
+// === Phase 479: Trust Drain Mitigator ===
+static EFI_STATUS TrustPhase_TrustDrainMitigation(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 hist[3]; static UINTN idx = 0;
+    hist[idx % 3] = ctx->trust_score; idx++;
+    if (idx >= 3) {
+        INT64 drop = (INT64)hist[(idx + 2) % 3] - (INT64)hist[(idx + 1) % 3];
+        drop += (INT64)hist[(idx + 1) % 3] - (INT64)hist[idx % 3];
+        if (drop < -15) {
+            ctx->trust_finalized = FALSE;
+            Telemetry_LogEvent("RecoveryIntent", (UINTN)(-drop), 0);
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 480: Trust Certainty Bandwidth Estimator ===
+static EFI_STATUS TrustPhase_EstimateTrustCertainty(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 certainty = 100 - (ctx->EntropyScore / 2);
+    if (certainty < 50) Telemetry_LogEvent("TrustCertaintyWarn", (UINTN)certainty, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 481: Trust Feedback Latency Mapper ===
+static EFI_STATUS TrustPhase_MapFeedbackLatency(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 latency = ctx->cpu_elapsed_tsc[0] > ctx->trust_recovery_map[0] ?
+                     ctx->cpu_elapsed_tsc[0] - ctx->trust_recovery_map[0] : 0;
+    ctx->phase_latency[ctx->phase_history_index % 20] = latency;
+    return EFI_SUCCESS;
+}
+
+// === Phase 482: AI Trust Consensus Evaluator ===
+static EFI_STATUS TrustPhase_EvaluateConsensus(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 consensus = (ctx->trust_score + ctx->kernel_trust_score + ctx->ai_global_trust_score) / 3;
+    Telemetry_LogEvent("ConsensusScore", (UINTN)consensus, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 483: Trust Fault Propagation Tracker ===
+static EFI_STATUS TrustPhase_TrackPropagation(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->trust_score < 30) {
+        UINTN affected = 0;
+        for (UINTN i = 0; i < 3; ++i) if (ctx->io_trust_map[i] < 30) affected++;
+        if (ctx->entropy_stalling) affected++;
+        Telemetry_LogEvent("TrustPropagate", affected, ctx->ai_status);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 484: Boot DNA Trust Resonance Validator ===
+static EFI_STATUS TrustPhase_ValidateDNATrustResonance(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < 16; ++i) sum += ctx->boot_dna_trust[i];
+    UINT64 avg = sum / 16;
+    UINT64 diff = (ctx->trust_score > avg) ? ctx->trust_score - avg : avg - ctx->trust_score;
+    if (avg && diff * 100 / avg > 20)
+        Telemetry_LogEvent("DNAResWarn", (UINTN)diff, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 485: Trust Quantum Coherence Score ===
+static EFI_STATUS TrustPhase_ComputeQuantumCoherence(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < 8; ++i) sum += ctx->quantum_table[i];
+    UINT64 coh = sum / 8;
+    if (coh < ctx->trust_score * 60 / 100) ctx->trust_ready = FALSE;
+    return EFI_SUCCESS;
+}
+
+// === Phase 486: Trust Bias Rectifier ===
+static EFI_STATUS TrustPhase_RectifyBias(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static INT64 hist[10]; static UINTN hidx = 0;
+    INT64 delta = (INT64)ctx->trust_score - (INT64)gPrevTrust;
+    hist[hidx % 10] = delta; hidx++;
+    if (hidx >= 10) {
+        UINTN inc = 0, dec = 0;
+        for (UINTN i = 0; i < 10; ++i) {
+            if (hist[i] > 0) inc++; else if (hist[i] < 0) dec++; }
+        if (inc > 7 && ctx->trust_score > 0) ctx->trust_score--;
+        else if (dec > 7 && ctx->trust_score < 100) ctx->trust_score++;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 487: Intent-Driven Trust Model Reinforcer ===
+static EFI_STATUS TrustPhase_ReinforceWithIntent(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->intent_alignment_score > 80) {
+        if (ctx->trust_score + 3 > 100) ctx->trust_score = 100;
+        else ctx->trust_score += 3;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 488: Temporal Trust Anchoring Agent ===
+static EFI_STATUS TrustPhase_AnchorTrustTemporally(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->phase_history_index % 10 == 0 && llabs((INT64)ctx->EntropyScore - (INT64)gPrevEntropy) <= 5) {
+        ctx->trust_anchor[ctx->phase_history_index % 32] = (UINT8)ctx->trust_score;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 489: Trust Distribution Classifier ===
+static EFI_STATUS TrustPhase_ClassifyTrustDistribution(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN low=0, mid=0, high=0;
+    for (UINTN i = 0; i < 20; ++i) {
+        UINT64 v = ctx->phase_trust[i];
+        if (v < 30) low++; else if (v <= 70) mid++; else high++; }
+    if (low >= mid && low >= high) ctx->ai_status = 0;
+    else if (mid >= low && mid >= high) ctx->ai_status = 1;
+    else ctx->ai_status = 2;
+    return EFI_SUCCESS;
+}
+
+// === Phase 490: Trust Burnout Prevention Agent ===
+static EFI_STATUS TrustPhase_PreventBurnout(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (ctx->phase_history_index >= 20) {
+        UINT64 old = ctx->phase_trust[(ctx->phase_history_index + 20 - 20) % 20];
+        if (old > ctx->trust_score + 40 && ctx->MissCount > 10)
+            ctx->trust_freeze_count = 5;
+    }
+    if (ctx->trust_freeze_count) ctx->trust_freeze_count--;
+    return EFI_SUCCESS;
+}
+
+// === Phase 494: Trust Elasticity Evaluator ===
+static EFI_STATUS TrustPhase_EvaluateElasticity(KERNEL_CONTEXT *ctx, UINTN phase) {
+    static UINT64 tr[4]; static UINT64 en[4]; static UINTN idx = 0;
+    tr[idx%4] = ctx->trust_score; en[idx%4] = ctx->EntropyScore; idx++;
+    if (idx >= 4) {
+        UINT64 td=0, ed=0; for (UINTN i=1;i<4;i++){ td += llabs((INT64)tr[i]-tr[i-1]); ed += llabs((INT64)en[i]-en[i-1]); }
+        if (ed == 0) ed = 1;
+        if (td * 10 < ed * 3) ctx->ai_status |= 0x04;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 495: Trust Root Resonance Check ===
+static EFI_STATUS TrustPhase_ResonanceCheck(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 h = ctx->trust_score ^ ctx->ai_root_reasoning_tree_hash;
+    if ((h & 0xFF) < 8) Telemetry_LogEvent("root conflict", (UINTN)(h & 0xFF), 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 496: Trust Phase Convergence Meter ===
+static EFI_STATUS TrustPhase_ConvergenceMeter(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINT64 diff=0; for(UINTN i=0;i<20;i++) diff += llabs((INT64)ctx->phase_trust[i]- (INT64)ctx->phase_entropy[i]);
+    if (diff/20 > 25 && ctx->trust_score > 2) ctx->trust_score -= 2;
+    return EFI_SUCCESS;
+}
+
+// === Phase 497: Trust-Weighted Task Influence Reporter ===
+static EFI_STATUS TrustPhase_ReportTaskInfluence(KERNEL_CONTEXT *ctx, UINTN phase) {
+    UINTN volatile_task=0; UINT64 max_lat=0;
+    for (UINTN i=0;i<ctx->snapshot_index && i<64; ++i) {
+        if (ctx->snapshot_buffer[i].latency > max_lat) {
+            max_lat = ctx->snapshot_buffer[i].latency;
+            volatile_task = ctx->snapshot_buffer[i].task_id;
+        }
+    }
+    Telemetry_LogEvent("TaskInfluence", volatile_task, (UINTN)max_lat);
+    return EFI_SUCCESS;
+}
+
+// === Phase 498: Trust Finalization Verifier ===
+static EFI_STATUS TrustPhase_VerifyFinalization(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (!ctx->trust_drift_alert && ctx->entropy_gap < 10 && ctx->MissCount == 0)
+        ctx->trust_finalized = TRUE;
+    return EFI_SUCCESS;
+}
+
+// === Phase 499: Global Trust Frame Emitter ===
+static EFI_STATUS TrustPhase_EmitGlobalFrame(KERNEL_CONTEXT *ctx, UINTN phase) {
+    Telemetry_LogEvent("TrustGlobalFrame", (UINTN)ctx->trust_score, (UINTN)ctx->avg_trust);
+    return EFI_SUCCESS;
+}
+
+// === Phase 500: Finalize Trust Mind ===
+static EFI_STATUS TrustPhase_FinalizeMind(KERNEL_CONTEXT *ctx, UINTN phase) {
+    Telemetry_LogEvent("TrustMindComplete", 1, 0);
+    ctx->trust_ready = TRUE;
+    gTrustFrozen = TRUE;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS TrustPhase_Execute(KERNEL_CONTEXT *ctx, UINTN phase) {
+    if (gTrustFrozen && phase != 500) return EFI_SUCCESS;
+    EFI_STATUS Status;
+    switch (phase) {
+        case 451: Status = TrustPhase_InitBaselineTrust(ctx, phase); break;
+        case 452: Status = TrustPhase_MixEntropyIntoTrust(ctx, phase); break;
+        case 453: Status = TrustPhase_AmplifySignal(ctx, phase); break;
+        case 454: Status = TrustPhase_FilterAnomaly(ctx, phase); break;
+        case 455: Status = TrustPhase_DetectOscillation(ctx, phase); break;
+        case 456: Status = TrustPhase_RebalanceTrustEntropy(ctx, phase); break;
+        case 457: Status = TrustPhase_ValidateDNA(ctx, phase); break;
+        case 458: Status = TrustPhase_PollMindTrusts(ctx, phase); break;
+        case 459: Status = TrustPhase_AnalyzeDrift(ctx, phase); break;
+        case 460: Status = TrustPhase_SanityCheck(ctx, phase); break;
+        case 461: Status = TrustPhase_LogTrustCurve(ctx, phase); break;
+        case 462: Status = TrustPhase_InterpolateLatency(ctx, phase); break;
+        case 463: Status = TrustPhase_GenerateHeatmap(ctx, phase); break;
+        case 464: Status = TrustPhase_SmoothTrustScore(ctx, phase); break;
+        case 465: Status = TrustPhase_EstimateContention(ctx, phase); break;
+        case 466: Status = TrustPhase_MapConfidenceBand(ctx, phase); break;
+        case 467: Status = TrustPhase_SyncEntropyGap(ctx, phase); break;
+        case 468: Status = TrustPhase_InsertSnapshot(ctx, phase); break;
+        case 469: Status = TrustPhase_AnalyzeDeviation(ctx, phase); break;
+        case 470: Status = TrustPhase_UpdateTrustDriftHistogram(ctx, phase); break;
+        case 471: Status = TrustPhase_TrackFalloffResistance(ctx, phase); break;
+        case 472: Status = TrustPhase_MapPeripheralTrustDelta(ctx, phase); break;
+        case 473: Status = TrustPhase_CalibrateAnomalyTolerance(ctx, phase); break;
+        case 474: Status = TrustPhase_MeasureTrustPulseWidth(ctx, phase); break;
+        case 475: Status = TrustPhase_ApplyRecoveryBoost(ctx, phase); break;
+        case 476: Status = TrustPhase_ShufflePenaltyBuffer(ctx, phase); break;
+        case 477: Status = TrustPhase_PredictInterleave(ctx, phase); break;
+        case 478: Status = TrustPhase_ValidateIntentCoherence(ctx, phase); break;
+        case 479: Status = TrustPhase_TrustDrainMitigation(ctx, phase); break;
+        case 480: Status = TrustPhase_EstimateTrustCertainty(ctx, phase); break;
+        case 481: Status = TrustPhase_MapFeedbackLatency(ctx, phase); break;
+        case 482: Status = TrustPhase_EvaluateConsensus(ctx, phase); break;
+        case 483: Status = TrustPhase_TrackPropagation(ctx, phase); break;
+        case 484: Status = TrustPhase_ValidateDNATrustResonance(ctx, phase); break;
+        case 485: Status = TrustPhase_ComputeQuantumCoherence(ctx, phase); break;
+        case 486: Status = TrustPhase_RectifyBias(ctx, phase); break;
+        case 487: Status = TrustPhase_ReinforceWithIntent(ctx, phase); break;
+        case 488: Status = TrustPhase_AnchorTrustTemporally(ctx, phase); break;
+        case 489: Status = TrustPhase_ClassifyTrustDistribution(ctx, phase); break;
+        case 490: Status = TrustPhase_PreventBurnout(ctx, phase); break;
+        case 494: Status = TrustPhase_EvaluateElasticity(ctx, phase); break;
+        case 495: Status = TrustPhase_ResonanceCheck(ctx, phase); break;
+        case 496: Status = TrustPhase_ConvergenceMeter(ctx, phase); break;
+        case 497: Status = TrustPhase_ReportTaskInfluence(ctx, phase); break;
+        case 498: Status = TrustPhase_VerifyFinalization(ctx, phase); break;
+        case 499: Status = TrustPhase_EmitGlobalFrame(ctx, phase); break;
+        case 500: Status = TrustPhase_FinalizeMind(ctx, phase); break;
+        default: Status = EFI_INVALID_PARAMETER; break;
+    }
+    gPrevTrust = ctx->trust_score;
+    gPrevEntropy = ctx->EntropyScore;
+    return Status;
 }
 
 EFI_STATUS Trust_InitPhase761_BootstrapTrustMind(KERNEL_CONTEXT *ctx) {

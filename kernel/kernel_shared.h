@@ -106,6 +106,9 @@ typedef struct {
     BOOLEAN trust_ready;
     BOOLEAN trust_finalized;
     UINT8  trust_anchor[32];
+    BOOLEAN trust_oscillating;
+    BOOLEAN trust_drift_alert;
+    UINT8   trust_freeze_count;
     /* AI core fields */
     UINT64 ai_global_trust_score;
     UINT8  ai_status;
