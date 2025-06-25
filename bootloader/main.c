@@ -36,6 +36,27 @@
 #include "font8x8_basic.inc"
 #include "loader_structs.h"
 
+// =====================[ Global Constants ]=====================
+#define MAX_CLEANUP_ENTRIES    64
+#define MEMORY_POISON_PATTERN  0xAA
+#define TRUST_SCORE_PASS       85
+#define KERNEL_PATH            L"\EFI\AiOS\kernel.elf"
+#define SIGNATURE_PATH         L"\EFI\AiOS\kernel.sig"
+#define SHA256_DIGEST_LENGTH   32
+#define BOOT_UID_LENGTH        16
+
+typedef enum {
+    ERR_NONE = 0,
+    ERR_MEM_LEAK,
+    ERR_SIG_INVALID,
+    ERR_SIG_NOT_READY,
+    ERR_PCR_CHANGED,
+    ERR_ELF_INVALID,
+    ERR_TPM_MISSING,
+    ERR_BOOT_TRUST_FAIL,
+    ERR_ALLOC_FAIL
+} BOOT_ERROR_CODE;
+
 static BOOT_CONTEXT gBootContext;
 
 typedef enum { LOG_INFO, LOG_WARN, LOG_ERROR } LOG_LEVEL;
@@ -56,7 +77,7 @@ typedef struct {
     UINTN   Count;
 } CLEAN_REC;
 
-static CLEAN_REC gCleanup[64];
+static CLEAN_REC gCleanup[MAX_CLEANUP_ENTRIES];
 static UINTN gCleanupCount = 0;
 
 static VOID RegisterAlloc(VOID *Ptr, BOOLEAN Pages, UINTN Count) {
@@ -110,7 +131,7 @@ static VOID CleanupAll(void) {
 }
 
 static VOID PoisonAndFreeMemory(VOID *Buffer, UINTN Size) {
-    if (Buffer && Size) SetMem(Buffer, Size, 0xAA);
+    if (Buffer && Size) SetMem(Buffer, Size, MEMORY_POISON_PATTERN);
     gBS->FreePool(Buffer);
 }
 
@@ -158,10 +179,10 @@ static UINT8 *gCertChain = NULL;
 static UINTN gCertChainSize = 0;
 static UINT8 gBootDNASignature[256];
 static UINTN gBootDNASignatureSize = 0;
-static CHAR16 gKernelPath[260]   = L"\\EFI\\AiOS\\kernel.elf";
-static CHAR16 gSignaturePath[260]= L"\\EFI\\AiOS\\kernel.sig";
+static CHAR16 gKernelPath[260]   = KERNEL_PATH;
+static CHAR16 gSignaturePath[260]= SIGNATURE_PATH;
 static CHAR16 gFallbackPath[260] = L"\\EFI\\AiOS\\recovery.elf";
-static UINT8  gTrustThreshold    = 85;
+static UINT8  gTrustThreshold = TRUST_SCORE_PASS;
 static EFI_PHYSICAL_ADDRESS gBootDNAHashRegion = 0;
 static EFI_PHYSICAL_ADDRESS gSealedBootDNA = 0;
 
@@ -397,7 +418,8 @@ static EFI_STATUS Phase019_ProtocolSetupComplete(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase020: PrepareTpmContext
-static EFI_STATUS Phase020_PrepareTpmContext(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase020_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 020 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
@@ -539,17 +561,26 @@ static EFI_STATUS Phase036_HashMemoryMap(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase037: StoreEntropy
-static EFI_STATUS Phase037_StoreEntropy(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase037_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 037 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase038: DisplayEntropy
-static EFI_STATUS Phase038_DisplayEntropy(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase038_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 038 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase039: PrepareExitBoot
-static EFI_STATUS Phase039_PrepareExitBoot(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase039_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 039 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase040: MemoryReady
 static EFI_STATUS Phase040_MemoryReady(BOOT_CONTEXT *Ctx) { Print(L"Memory preparation done\n"); return EFI_SUCCESS; }
 
 // Phase041: OpenKernelFile
 static EFI_STATUS Phase041_OpenKernelFile(BOOT_CONTEXT *Ctx) {
-    CHAR16 *Path = L"\\EFI\\AiOS\\kernel.elf";
+    CHAR16 *Path = KERNEL_PATH;
     return gBootContext.RootDir->Open(gBootContext.RootDir, &gBootContext.KernelFile, Path, EFI_FILE_MODE_READ, 0);
 }
 
@@ -601,7 +632,7 @@ static EFI_STATUS Phase050_BootLoadingBegin(BOOT_CONTEXT *Ctx) { Print(L"Kernel 
 
 // Phase051: OpenKernelForLoad
 static EFI_STATUS Phase051_OpenKernelForLoad(BOOT_CONTEXT *Ctx) {
-    CHAR16 *Path = L"\\EFI\\AiOS\\kernel.elf";
+    CHAR16 *Path = KERNEL_PATH;
     return gBootContext.RootDir->Open(gBootContext.RootDir, &gBootContext.KernelFile, Path, EFI_FILE_MODE_READ, 0);
 }
 
@@ -704,7 +735,7 @@ static EFI_STATUS Phase061_LocateHash2Protocol(BOOT_CONTEXT *Ctx) {
 
 // Phase062: OpenKernelForHash
 static EFI_STATUS Phase062_OpenKernelForHash(BOOT_CONTEXT *Ctx) {
-    CHAR16 *Path = L"\\EFI\\AiOS\\kernel.elf";
+    CHAR16 *Path = KERNEL_PATH;
     return gBootContext.RootDir->Open(gBootContext.RootDir, &gBootContext.KernelFile, Path, EFI_FILE_MODE_READ, 0);
 }
 
@@ -751,7 +782,7 @@ static EFI_STATUS Phase067_CloseKernelAfterHash(BOOT_CONTEXT *Ctx) {
 
 // Phase068: OpenSignatureFile
 static EFI_STATUS Phase068_OpenSignatureFile(BOOT_CONTEXT *Ctx) {
-    CHAR16 *Path = L"\\EFI\\AiOS\\kernel.sig";
+    CHAR16 *Path = SIGNATURE_PATH;
     return gBootContext.RootDir->Open(gBootContext.RootDir, &gSigFile, Path, EFI_FILE_MODE_READ, 0);
 }
 
@@ -783,28 +814,44 @@ static EFI_STATUS Phase071_CloseSignatureFile(BOOT_CONTEXT *Ctx) {
 
 // Phase072: ValidateKernelSignature
 static EFI_STATUS Phase072_ValidateKernelSignature(BOOT_CONTEXT *Ctx) {
-    if (EFI_ERROR(LoadPublicKey(Ctx->RootDir))) { Ctx->LastError = ERR_SIG_INVALID; return EFI_SECURITY_VIOLATION; }
-    static CONST UINT8 Exponent[3] = {0x01,0x00,0x01};
-    VOID *Rsa = RsaNew();
-    if (Rsa==NULL) return EFI_OUT_OF_RESOURCES;
-    if (!RsaSetKey(Rsa, RsaKeyN, gPublicKey, gPublicKeySize) || !RsaSetKey(Rsa, RsaKeyE, Exponent, sizeof(Exponent))) {
-        RsaFree(Rsa);
-        return EFI_ABORTED;
-    }
-    if (gSignature==NULL) { RsaFree(Rsa); return EFI_NOT_READY; }
-    BOOLEAN Valid = RsaPkcs1Verify(Rsa, gBootContext.Params.KernelHash, 32, gSignature, gSignatureSize);
-    RsaFree(Rsa);
-    gBootContext.Params.SignatureValid = Valid ? TRUE : FALSE;
-    if (Valid) {
-        gBS->SetMemoryAttributes(gBootContext.Params.KernelBase,
-                                 EFI_SIZE_TO_PAGES(gBootContext.Params.KernelSize)*EFI_PAGE_SIZE,
-                                 EFI_MEMORY_RO);
-    } else {
+    EFI_STATUS S = EFI_SUCCESS;
+    VOID *Rsa = NULL;
+
+    if (EFI_ERROR(LoadPublicKey(Ctx->RootDir))) {
         Ctx->LastError = ERR_SIG_INVALID;
-        gBootContext.Params.BootTrustScore = 0;
-        Phase250_LockdownAndReboot(Ctx);
+        S = EFI_SECURITY_VIOLATION;
+        goto cleanup;
     }
-    return Valid ? EFI_SUCCESS : EFI_SECURITY_VIOLATION;
+
+    Rsa = RsaNew();
+    if (!Rsa) {
+        S = EFI_OUT_OF_RESOURCES;
+        goto cleanup;
+    }
+
+    if (!RsaSetKey(Rsa, gPublicKey, gPublicKeyLength)) {
+        S = EFI_ABORTED;
+        goto cleanup;
+    }
+
+    if (gSignature == NULL) {
+        Ctx->LastError = ERR_SIG_NOT_READY;
+        S = EFI_NOT_READY;
+        goto cleanup;
+    }
+
+    BOOLEAN Valid = RsaPkcs1Verify(Rsa, gSignature, gSignatureLength,
+                                    Ctx->KernelHash, SHA256_DIGEST_LENGTH);
+    if (!Valid) {
+        Ctx->LastError = ERR_SIG_INVALID;
+        S = EFI_SECURITY_VIOLATION;
+        goto cleanup;
+    }
+
+cleanup:
+    if (Rsa) RsaFree(Rsa);
+    return S;
+
 }
 
 // Phase073: LogSignatureStatus
@@ -920,7 +967,10 @@ static EFI_STATUS Phase078_LogBootTrustScore(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase079: InitIdentityStructure
-static EFI_STATUS Phase079_InitIdentityStructure(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase079_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 079 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase080: GenerateBootUid
 static EFI_STATUS Phase080_GenerateBootUid(BOOT_CONTEXT *Ctx) {
@@ -966,7 +1016,10 @@ static EFI_STATUS Phase084_CleanupSignatureBuffer(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase085: FinalizeIdentity
-static EFI_STATUS Phase085_FinalizeIdentity(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase085_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 085 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase086: BootReady
 static EFI_STATUS Phase086_BootReady(BOOT_CONTEXT *Ctx) { Print(L"Boot preparation complete\n"); return EFI_SUCCESS; }
@@ -986,9 +1039,15 @@ static EFI_STATUS Phase091_WaitForKey(BOOT_CONTEXT *Ctx){ EFI_INPUT_KEY K; retur
 // Phase092: FreeMemoryMap
 static EFI_STATUS Phase092_FreeMemoryMap(BOOT_CONTEXT *Ctx){ if(gBootContext.Params.MemoryMap){ SafeFree(gBootContext.Params.MemoryMap); gBootContext.Params.MemoryMap=NULL; } return EFI_SUCCESS; }
 // Phase093: EndGraphics
-static EFI_STATUS Phase093_EndGraphics(BOOT_CONTEXT *Ctx){ return EFI_SUCCESS; }
+static EFI_STATUS Phase093_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 093 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase094: ShutdownTcg
-static EFI_STATUS Phase094_ShutdownTcg(BOOT_CONTEXT *Ctx){ return EFI_SUCCESS; }
+static EFI_STATUS Phase094_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 094 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase095: FreePhdrs
 static EFI_STATUS Phase095_FreePhdrs(BOOT_CONTEXT *Ctx){ if(gPhdrs){ SafeFree(gPhdrs); gPhdrs=NULL; } return EFI_SUCCESS; }
 // Phase096: LogCompletion
@@ -998,7 +1057,10 @@ static EFI_STATUS Phase097_FinalPause(BOOT_CONTEXT *Ctx){ gBS->Stall(500000); re
 // Phase098: FinalMessage
 static EFI_STATUS Phase098_FinalMessage(BOOT_CONTEXT *Ctx){ Print(L"Handing off to kernel...\n"); return EFI_SUCCESS; }
 // Phase099: NoOp
-static EFI_STATUS Phase099_NoOp(BOOT_CONTEXT *Ctx){ return EFI_SUCCESS; }
+static EFI_STATUS Phase099_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 099 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase100: BootComplete
 static EFI_STATUS Phase100_BootComplete(BOOT_CONTEXT *Ctx){ Print(L"Boot complete.\n"); return EFI_SUCCESS; }
 
@@ -1344,7 +1406,8 @@ static EFI_STATUS Phase131_CheckMemory(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase132: FinalizeMemoryScan
-static EFI_STATUS Phase132_FinalizeMemoryScan(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase132_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 132 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
@@ -1355,12 +1418,14 @@ static EFI_STATUS Phase133_RandomDelay(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase134: MemoryScanningComplete
-static EFI_STATUS Phase134_MemoryScanningComplete(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase134_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 134 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
 // Phase135: ReserveTime
-static EFI_STATUS Phase135_ReserveTime(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase135_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 135 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
@@ -1371,27 +1436,32 @@ static EFI_STATUS Phase136_RecordTpmTimer(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase137: RecordFsTimer
-static EFI_STATUS Phase137_RecordFsTimer(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase137_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 137 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
 // Phase138: RecordHashTimer
-static EFI_STATUS Phase138_RecordHashTimer(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase138_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 138 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
 // Phase139: RecordElfTimer
-static EFI_STATUS Phase139_RecordElfTimer(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase139_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 139 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
 // Phase140: ComputeBootTime
-static EFI_STATUS Phase140_ComputeBootTime(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase140_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 140 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
 // Phase141: PrepareBootScoreWeight
-static EFI_STATUS Phase141_PrepareBootScoreWeight(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase141_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 141 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
@@ -1402,12 +1472,14 @@ static EFI_STATUS Phase142_LogTimingSummary(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase143: StoreTimerData
-static EFI_STATUS Phase143_StoreTimerData(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase143_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 143 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
 // Phase144: RealTimePrepComplete
-static EFI_STATUS Phase144_RealTimePrepComplete(BOOT_CONTEXT *Ctx) {
+static EFI_STATUS Phase144_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 144 executed - no operation defined.\n");
     return EFI_SUCCESS;
 }
 
@@ -1569,9 +1641,15 @@ static EFI_STATUS Phase158_FinalLockdownMsg(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase159: NoOp
-static EFI_STATUS Phase159_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase159_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 159 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase160: LockdownComplete
-static EFI_STATUS Phase160_LockdownComplete(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase160_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 160 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase161: CheckTrustThreshold
 static EFI_STATUS Phase161_CheckTrustThreshold(BOOT_CONTEXT *Ctx) {
@@ -1615,13 +1693,25 @@ static EFI_STATUS Phase166_PauseForFallback(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase167: LogFallbackComplete
-static EFI_STATUS Phase167_LogFallbackComplete(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase167_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 167 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase168: NoOp
-static EFI_STATUS Phase168_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase168_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 168 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase169: NoOp
-static EFI_STATUS Phase169_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase169_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 169 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase170: FaultDecisionDone
-static EFI_STATUS Phase170_FaultDecisionDone(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase170_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 170 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 typedef struct {
     LOADER_PARAMS Params;
@@ -1681,15 +1771,30 @@ static EFI_STATUS Phase175_LogParamsAddress(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase176: NoOp
-static EFI_STATUS Phase176_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase176_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 176 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase177: NoOp
-static EFI_STATUS Phase177_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase177_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 177 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase178: NoOp
-static EFI_STATUS Phase178_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase178_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 178 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase179: NoOp
-static EFI_STATUS Phase179_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase179_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 179 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase180: ParamsInjectionDone
-static EFI_STATUS Phase180_ParamsInjectionDone(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase180_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 180 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase181: ValidateMapForExit
 static EFI_STATUS Phase181_ValidateMapForExit(BOOT_CONTEXT *Ctx) {
@@ -1716,19 +1821,40 @@ static EFI_STATUS Phase183_ShowLaunchSplash(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase184: NoOp
-static EFI_STATUS Phase184_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase184_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 184 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase185: NoOp
-static EFI_STATUS Phase185_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase185_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 185 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase186: NoOp
-static EFI_STATUS Phase186_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase186_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 186 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase187: NoOp
-static EFI_STATUS Phase187_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase187_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 187 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase188: NoOp
-static EFI_STATUS Phase188_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase188_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 188 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase189: NoOp
-static EFI_STATUS Phase189_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase189_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 189 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase190: HandoffPrepDone
-static EFI_STATUS Phase190_HandoffPrepDone(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase190_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 190 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase191: JumpToKernel
 static EFI_STATUS Phase191_JumpToKernel(BOOT_CONTEXT *Ctx) {
@@ -1739,13 +1865,25 @@ static EFI_STATUS Phase191_JumpToKernel(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase192: NoOp
-static EFI_STATUS Phase192_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase192_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 192 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase193: NoOp
-static EFI_STATUS Phase193_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase193_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 193 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase194: NoOp
-static EFI_STATUS Phase194_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase194_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 194 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase195: NoOp
-static EFI_STATUS Phase195_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase195_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 195 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase196: ReserveEventLog
 static EFI_STATUS Phase196_ReserveEventLog(BOOT_CONTEXT *Ctx) {
@@ -1772,7 +1910,10 @@ static EFI_STATUS Phase198_LogEventAddress(BOOT_CONTEXT *Ctx) {
 }
 
 // Phase199: NoOp
-static EFI_STATUS Phase199_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase199_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 199 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase200: ReservationComplete
 // Phase200: AILogBootBehavior
 static EFI_STATUS Phase200_AILogBootBehavior(BOOT_CONTEXT *Ctx) {
@@ -2165,9 +2306,12 @@ static EFI_STATUS Phase249_FinalCacheDone(BOOT_CONTEXT *Ctx) {
 
 // Phase250: LockdownAndReboot
 static EFI_STATUS Phase250_LockdownAndReboot(BOOT_CONTEXT *Ctx) {
-    Print(L"System integrity compromised. Rebooting...\n");
-    gRT->ResetSystem(EfiResetCold, EFI_SECURITY_VIOLATION, 0, NULL);
-    return EFI_SECURITY_VIOLATION;
+    Print(L"\n=== BOOT LOCKDOWN ENGAGED ===\n");
+    SaveBootLog(Ctx);
+    PoisonAndFreeAllMemory(); // Clear traces
+    CpuHalt();                // Halt to ensure no return
+    return EFI_ACCESS_DENIED; // Explicit signal
+
 }
 
 // Config loader phases and extras
@@ -2176,81 +2320,186 @@ static EFI_STATUS Phase251_LoadBootConfig(BOOT_CONTEXT *Ctx);
 // Phase252: LogConfig
 static EFI_STATUS Phase252_LogConfig(BOOT_CONTEXT *Ctx);
 // Phase253: NoOp
-static EFI_STATUS Phase253_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase253_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 253 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase254: NoOp
-static EFI_STATUS Phase254_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase254_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 254 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase255: NoOp
-static EFI_STATUS Phase255_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase255_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 255 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase256: NoOp
-static EFI_STATUS Phase256_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase256_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 256 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase257: NoOp
-static EFI_STATUS Phase257_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase257_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 257 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase258: NoOp
-static EFI_STATUS Phase258_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase258_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 258 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase259: NoOp
-static EFI_STATUS Phase259_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase259_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 259 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase260: NoOp
-static EFI_STATUS Phase260_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase260_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 260 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase261: NoOp
-static EFI_STATUS Phase261_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase261_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 261 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase262: NoOp
-static EFI_STATUS Phase262_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase262_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 262 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase263: NoOp
-static EFI_STATUS Phase263_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase263_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 263 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase264: NoOp
-static EFI_STATUS Phase264_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase264_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 264 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase265: NoOp
-static EFI_STATUS Phase265_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase265_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 265 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase266: NoOp
-static EFI_STATUS Phase266_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase266_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 266 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase267: NoOp
-static EFI_STATUS Phase267_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase267_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 267 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase268: NoOp
-static EFI_STATUS Phase268_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase268_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 268 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase269: NoOp
-static EFI_STATUS Phase269_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase269_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 269 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase270: ComputeFinalTrustScore
 static EFI_STATUS Phase270_ComputeFinalTrustScore(BOOT_CONTEXT *Ctx);
 // Phase271: NoOp
-static EFI_STATUS Phase271_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase271_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 271 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase272: NoOp
-static EFI_STATUS Phase272_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase272_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 272 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase273: NoOp
-static EFI_STATUS Phase273_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase273_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 273 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase274: NoOp
-static EFI_STATUS Phase274_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase274_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 274 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase275: NoOp
-static EFI_STATUS Phase275_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase275_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 275 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase276: NoOp
-static EFI_STATUS Phase276_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase276_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 276 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase277: NoOp
-static EFI_STATUS Phase277_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase277_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 277 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase278: NoOp
-static EFI_STATUS Phase278_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase278_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 278 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase279: NoOp
-static EFI_STATUS Phase279_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase279_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 279 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase280: BootDNAHash
 static EFI_STATUS Phase280_BootDNAHash(BOOT_CONTEXT *Ctx);
 // Phase281: NoOp
-static EFI_STATUS Phase281_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase281_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 281 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase282: NoOp
-static EFI_STATUS Phase282_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase282_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 282 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase283: NoOp
-static EFI_STATUS Phase283_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase283_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 283 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase284: NoOp
-static EFI_STATUS Phase284_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase284_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 284 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase285: NoOp
-static EFI_STATUS Phase285_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase285_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 285 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase286: NoOp
-static EFI_STATUS Phase286_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase286_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 286 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase287: NoOp
-static EFI_STATUS Phase287_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase287_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 287 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase288: NoOp
-static EFI_STATUS Phase288_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase288_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 288 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase289: NoOp
-static EFI_STATUS Phase289_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase289_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 289 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase290: CheckTrustThreshold
 static EFI_STATUS Phase290_CheckTrustThreshold(BOOT_CONTEXT *Ctx);
@@ -2265,21 +2514,45 @@ static EFI_STATUS Phase291_AttemptRecovery(BOOT_CONTEXT *Ctx) {
     return EFI_SUCCESS;
 }
 // Phase292: NoOp
-static EFI_STATUS Phase292_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase292_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 292 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase293: NoOp
-static EFI_STATUS Phase293_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase293_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 293 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase294: NoOp
-static EFI_STATUS Phase294_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase294_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 294 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase295: NoOp
-static EFI_STATUS Phase295_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase295_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 295 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase296: NoOp
-static EFI_STATUS Phase296_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase296_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 296 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase297: NoOp
-static EFI_STATUS Phase297_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase297_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 297 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase298: NoOp
-static EFI_STATUS Phase298_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase298_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 298 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 // Phase299: NoOp
-static EFI_STATUS Phase299_NoOp(BOOT_CONTEXT *Ctx) { return EFI_SUCCESS; }
+static EFI_STATUS Phase299_NoOpPhase(BOOT_CONTEXT *Ctx) {
+    Print(L"Phase 299 executed - no operation defined.\n");
+    return EFI_SUCCESS;
+}
 
 // Phase300: ConsciousHandoff
 static EFI_STATUS Phase300_ConsciousHandoff(BOOT_CONTEXT *Ctx);
@@ -2394,18 +2667,68 @@ static VOID PrintTopPhases(void) {
         Print(L"%s %lu\n", gBootPhases[idx[i]].Name, Dur[i]);
 }
 
+
+// ---------------------[ REAL-TIME STRUCTURE ]---------------------
+typedef struct {
+    UINTN PhaseMissCount;
+    UINT8 MissedPhase[301];
+    UINT64 TotalTsc;
+    UINT64 MaxPhaseTsc;
+    UINT64 PhaseElapsed[301];
+} BOOT_REALTIME;
+
+static BOOT_REALTIME gRealTime;
+
+static const UINT64 gPhaseDeadline[301] = {
+    [0 ... 300] = 2000000, // Default: 2M cycles per phase (~1ms at 2GHz)
+    [1] = 1000000, [2] = 1000000, [3] = 1000000,
+    [50] = 5000000,  [65] = 6000000, [72] = 6000000,
+    [191] = 1000000, [300] = 3000000
+};
+
+#define MAX_TOTAL_BOOT_TSC 100000000ULL  // ~50ms at 2GHz
+
 static EFI_STATUS RunAllPhases(BOOT_CONTEXT *Ctx) {
     UINTN Count = sizeof(gBootPhases)/sizeof(gBootPhases[0]);
+    UINT64 globalStart = AsmReadTsc();
+    UINT64 maxTsc = 0;
+
     for (UINTN i = 0; i < Count; ++i) {
-        EFI_STATUS Status; gPhaseStart[i]=AsmReadTsc();
+        UINT64 start = AsmReadTsc();
+        EFI_STATUS Status;
+
         if (gBootPhases[i].PhaseId == 1)
             Status = Phase001_InitializeBootContext(Ctx->ImageHandle, Ctx->SystemTable);
         else
             Status = gBootPhases[i].Function(Ctx);
-        gPhaseEnd[i]=AsmReadTsc();
+
+        UINT64 end = AsmReadTsc();
+        UINT64 elapsed = end - start;
+        gRealTime.PhaseElapsed[i] = elapsed;
+        if (elapsed > maxTsc) maxTsc = elapsed;
+
+        if (elapsed > gPhaseDeadline[i]) {
+            gRealTime.PhaseMissCount++;
+            gRealTime.MissedPhase[i] = 1;
+            Log(LOG_WARN, L"[RT] Phase %u exceeded deadline (%lu > %lu)", i, elapsed, gPhaseDeadline[i]);
+        }
+
         Log(EFI_ERROR(Status) ? LOG_ERROR : LOG_INFO, L"%s -> %r", gBootPhases[i].Name, Status);
         if (EFI_ERROR(Status)) { CleanupAll(); return Status; }
     }
+
+    UINT64 globalEnd = AsmReadTsc();
+    gRealTime.TotalTsc = globalEnd - globalStart;
+    gRealTime.MaxPhaseTsc = maxTsc;
+
+    if (gRealTime.TotalTsc > MAX_TOTAL_BOOT_TSC || gRealTime.PhaseMissCount > 10) {
+        Ctx->Params.FallbackMode = TRUE;
+        Log(LOG_WARN, L"[RT] Boot duration or phase count exceeded RT limits.");
+    }
+
+    if (gRealTime.PhaseMissCount > 0 && Ctx->Params.BootTrustScore > 5)
+        Ctx->Params.BootTrustScore -= (UINT8)(gRealTime.PhaseMissCount);
+
     PrintTopPhases();
     CleanupAll();
     return EFI_SUCCESS;
@@ -2413,11 +2736,13 @@ static EFI_STATUS RunAllPhases(BOOT_CONTEXT *Ctx) {
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     InitializeLib(ImageHandle, SystemTable);
-    Log(LOG_INFO, L"AiOS Bootloader Initializing...");
+    Log(LOG_INFO, L"AiOS Bootloader (RT Enabled) Initializing...");
     gBootContext.ImageHandle = ImageHandle;
     gBootContext.SystemTable = SystemTable;
+
     EFI_STATUS St = RunAllPhases(&gBootContext);
     if (gBootContext.Config.BootDelay)
         gBS->Stall(gBootContext.Config.BootDelay * 1000000);
+
     return St;
 }
