@@ -27,6 +27,11 @@ EFI_STATUS AICore_InvokeRecovery(const CHAR8 *module, UINTN phase);
 EFI_STATUS AICore_EstimateIODeadlineUrgency(UINTN *urg);
 EFI_STATUS AICore_PredictSuccessRate(UINTN phase_id, UINTN *prob);
 
+// Storage mind helpers
+EFI_STATUS AICore_ClassifyStoragePhaseUrgency(UINTN metric, UINTN *class_out);
+EFI_STATUS AICore_PredictIOEntropyTrend(UINT64 *trend_out);
+UINTN AICore_ScoreStorageMindPerformance(KERNEL_CONTEXT *ctx);
+
 EFI_STATUS AICore_SendToTelemetry(void);
 
 // AI Core initialization phases 861-900
