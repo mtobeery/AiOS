@@ -114,6 +114,14 @@ typedef struct {
     BOOLEAN memory_trust_sync;
     BOOLEAN trust_alarm_active;
     BOOLEAN trust_mind_sealed;
+    UINT64  trust_floor;
+    UINT64  trust_damage_index;
+    INT64   trust_slope_buffer[20];
+    UINT8   trust_heatmap[100];
+    UINT64  trust_smoothed[20];
+    UINT64  trust_normalized[20];
+    UINT64  meta_trust_score;
+    UINT64  shared_trust_cache[8];
     /* AI core fields */
     UINT64 ai_global_trust_score;
     UINT8  ai_status;
