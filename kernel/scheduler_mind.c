@@ -581,9 +581,261 @@ static EFI_STATUS Scheduler_InitPhase500_FinalizeSchedulerMind(KERNEL_CONTEXT *c
     return EFI_SUCCESS;
 }
 
+// === Phase 511: PreemptiveSchedulerPulse ===
+static EFI_STATUS Scheduler_InitPhase511_PreemptiveSchedulerPulse(KERNEL_CONTEXT *ctx) {
+    if ((ctx->EntropyScore & 0xF) > 8) {
+        for (UINTN i = 0; i < 8; ++i) {
+            if (ctx->phase_trust[i % 20] < 40 || ctx->cpu_missed[i])
+                ctx->quantum_table[i] = 0;
+        }
+        ctx->pulse_count++;
+        Telemetry_LogEvent("PreemptPulse", ctx->pulse_count, ctx->EntropyScore);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 512: ThreadLatencyProfiler ===
+static EFI_STATUS Scheduler_InitPhase512_ThreadLatencyProfiler(KERNEL_CONTEXT *ctx) {
+    static UINT64 samples[8][10];
+    static UINTN sample_idx = 0;
+    for (UINTN i = 0; i < 8; ++i)
+        samples[i][sample_idx % 10] = ctx->cpu_elapsed_tsc[i];
+    sample_idx++;
+    if (sample_idx >= 10) {
+        for (UINTN t = 0; t < 8; ++t) {
+            UINT64 sum = 0;
+            for (UINTN s = 0; s < 10; ++s) sum += samples[t][s];
+            UINT64 avg = sum / 10;
+            if (avg > CPU_PHASE_THRESHOLD) {
+                ctx->trust_penalty_buffer[t] = 1;
+                Telemetry_LogEvent("LatencyHigh", t, (UINTN)avg);
+            } else {
+                ctx->trust_penalty_buffer[t] = 0;
+            }
+        }
+        sample_idx = 0;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 513: ReactiveAffinityBalancer ===
+static EFI_STATUS Scheduler_InitPhase513_ReactiveAffinityBalancer(KERNEL_CONTEXT *ctx) {
+    UINTN hi = 0, lo = 0;
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->cpu_load_map[i] > ctx->cpu_load_map[hi]) hi = i;
+        if (ctx->cpu_load_map[i] < ctx->cpu_load_map[lo]) lo = i;
+    }
+    if (ctx->cpu_load_map[hi] > ctx->cpu_load_map[lo] + 20) {
+        for (UINTN t = 0; t < 8; ++t) {
+            if (ctx->thread_numa_map[t] == hi && ctx->phase_trust[t % 20] > 50) {
+                ctx->thread_numa_map[t] = lo;
+                Telemetry_LogEvent("ReactiveBal", t, lo);
+            }
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 514: ThermalEntropyNormalizer ===
+static EFI_STATUS Scheduler_InitPhase514_ThermalEntropyNormalizer(KERNEL_CONTEXT *ctx) {
+    for (UINTN c = 0; c < 8; ++c) {
+        INTN temp = 0;
+        CpuMind_GetTemperature(c, &temp);
+        if (temp > 70 && (ctx->EntropyScore & 0xFF) > 128) {
+            UINTN tgt = (c + 1) % 8;
+            ctx->thread_numa_map[c] = tgt;
+            Telemetry_LogEvent("ThermNorm", c, tgt);
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 515: GPUOffloadAdvisor ===
+static EFI_STATUS Scheduler_InitPhase515_GPUOffloadAdvisor(KERNEL_CONTEXT *ctx) {
+    UINT64 map[1] = { ctx->EntropyScore };
+    if ((ctx->EntropyScore & 3) == 0) {
+        GpuMind_TransferHeatmap(map, 1, 1);
+        Telemetry_LogEvent("GPUOffload", 1, (UINTN)map[0]);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 516: TaskEnergyEfficiencyScore ===
+static EFI_STATUS Scheduler_InitPhase516_TaskEnergyEfficiencyScore(KERNEL_CONTEXT *ctx) {
+    UINT64 lowest = ~0ULL; UINTN worst = 0;
+    for (UINTN i = 0; i < 8; ++i) {
+        UINT64 work = ctx->cpu_elapsed_tsc[i] ? (1000 / ctx->cpu_elapsed_tsc[i]) : 1000;
+        if (work < lowest) { lowest = work; worst = i; }
+    }
+    Trust_AdjustScore(worst, -1);
+    ctx->scheduler_entropy_buffer[ctx->scheduler_entropy_index % 16] ^= lowest;
+    Telemetry_LogEvent("EffScore", worst, (UINTN)lowest);
+    return EFI_SUCCESS;
+}
+
+// === Phase 517: DynamicReprioritization ===
+static EFI_STATUS Scheduler_InitPhase517_DynamicReprioritization(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->phase_trust[i % 20] > 70) {
+            if (ctx->quantum_table[i] > 0) ctx->quantum_table[i]--;
+        } else if (ctx->phase_trust[i % 20] < 40) {
+            ctx->quantum_table[i]++;
+        }
+    }
+    Telemetry_LogEvent("DynReprior", ctx->quantum_table[0], ctx->quantum_table[1]);
+    return EFI_SUCCESS;
+}
+
+// === Phase 518: EntropyBoundaryClamp ===
+static EFI_STATUS Scheduler_InitPhase518_EntropyBoundaryClamp(KERNEL_CONTEXT *ctx) {
+    UINTN idx = (ctx->scheduler_entropy_index + 15) % 16;
+    INT64 diff = (INT64)ctx->EntropyScore - (INT64)ctx->scheduler_entropy_buffer[idx];
+    if (diff > 50) {
+        ctx->EntropyScore = ctx->scheduler_entropy_buffer[idx] + 50;
+        Telemetry_LogEvent("EntropyClamp", (UINTN)diff, 0);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 519: SchedulerLoadTrendPredictor ===
+static EFI_STATUS Scheduler_InitPhase519_SchedulerLoadTrendPredictor(KERNEL_CONTEXT *ctx) {
+    static UINTN pred_idx = 0;
+    UINTN sum = 0;
+    for (UINTN i = 0; i < 8; ++i) sum += ctx->cpu_load_map[i];
+    ctx->scheduler_load_prediction[pred_idx % 4] = sum / 8;
+    Telemetry_LogEvent("LoadPredict", pred_idx, ctx->scheduler_load_prediction[pred_idx % 4]);
+    pred_idx++;
+    return EFI_SUCCESS;
+}
+
+// === Phase 520: TrustEntropyCorrelationModel ===
+static EFI_STATUS Scheduler_InitPhase520_TrustEntropyCorrelationModel(KERNEL_CONTEXT *ctx) {
+    UINT64 sum = 0, acc = 0;
+    for (UINTN i = 0; i < 20; ++i) {
+        sum += ctx->phase_trust[i] + ctx->phase_entropy[i];
+        acc += ctx->phase_trust[i] * ctx->phase_entropy[i];
+    }
+    ctx->trust_entropy_curve = (INTN)(sum ? (acc / sum) : 0);
+    if (ctx->trust_entropy_curve > 200)
+        Telemetry_LogEvent("TrustEntropyAnom", ctx->trust_entropy_curve, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 521: ThreadEntropySpilloverGuard ===
+static EFI_STATUS Scheduler_InitPhase521_ThreadEntropySpilloverGuard(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->phase_entropy[i % 20] > 150) {
+            UINTN n = (i + 1) % 8;
+            ctx->phase_trust[n % 20] >>= 1;
+        }
+    }
+    Telemetry_LogEvent("EntropySpillGuard", 0, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 522: AITrustDeviationFixer ===
+static EFI_STATUS Scheduler_InitPhase522_AITrustDeviationFixer(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->trust_penalty_buffer[i] && ctx->phase_trust[i % 20] > 60) {
+            Trust_AdjustScore(i, +1);
+            ctx->trust_penalty_buffer[i] = 0;
+        }
+    }
+    AICore_ReportEvent("TrustFixer");
+    return EFI_SUCCESS;
+}
+
+// === Phase 523: NanotrustDecayShield ===
+static EFI_STATUS Scheduler_InitPhase523_NanotrustDecayShield(KERNEL_CONTEXT *ctx) {
+    if (Trust_GetCurrentScore() > 90) {
+        for (UINTN i = 0; i < 8; ++i)
+            ctx->phase_trust[i % 20] += 1;
+        Telemetry_LogEvent("NanoShield", 0, 0);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 524: TaskRetirementHandler ===
+static EFI_STATUS Scheduler_InitPhase524_TaskRetirementHandler(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i) {
+        if ((AsmReadTsc() & (1 << i)) == 0) {
+            Telemetry_LogEvent("TaskRetire", i, ctx->phase_entropy[i % 20]);
+            AICore_ReportPhase("Retire", i);
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 525: GPUBackpressureLimiter ===
+static EFI_STATUS Scheduler_InitPhase525_GPUBackpressureLimiter(KERNEL_CONTEXT *ctx) {
+    static BOOLEAN halted = FALSE;
+    if (!halted && ctx->cpu_elapsed_tsc[0] > CPU_PHASE_THRESHOLD) {
+        halted = TRUE;
+        Telemetry_LogEvent("GpuBackpress", 1, (UINTN)ctx->cpu_elapsed_tsc[0]);
+    } else if (halted && ctx->EntropyScore > 50) {
+        halted = FALSE;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 526: EntropyBackfillCompensator ===
+static EFI_STATUS Scheduler_InitPhase526_EntropyBackfillCompensator(KERNEL_CONTEXT *ctx) {
+    if (ctx->EntropyScore < 20) {
+        for (UINTN i = 0; i < 4; ++i) AsmReadTsc();
+        ctx->EntropyScore += 5;
+        Telemetry_LogEvent("EntropyBackfill", (UINTN)ctx->EntropyScore, 0);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 527: QuantumRedistributionAgent ===
+static EFI_STATUS Scheduler_InitPhase527_QuantumRedistributionAgent(KERNEL_CONTEXT *ctx) {
+    UINTN moved = 0;
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->cpu_load_map[i] < 50 && ctx->quantum_table[i] > 1) {
+            UINTN q = ctx->quantum_table[i] / 2;
+            ctx->quantum_table[i] -= q;
+            ctx->quantum_table[(i + 1) % 8] += q;
+            moved += q;
+        }
+    }
+    Telemetry_LogEvent("QuantumRedistrib", moved, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 528: ThreadLifecycleMapLogger ===
+static EFI_STATUS Scheduler_InitPhase528_ThreadLifecycleMapLogger(KERNEL_CONTEXT *ctx) {
+    UINTN active = ctx->snapshot_index;
+    if (active > 256) active = 256;
+    Telemetry_LogEvent("LifecycleSnap", active, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 529: FrequencyHoppingAdviser ===
+static EFI_STATUS Scheduler_InitPhase529_FrequencyHoppingAdviser(KERNEL_CONTEXT *ctx) {
+    UINT64 var = 0;
+    for (UINTN i = 0; i < 8; ++i) var += ctx->cpu_elapsed_tsc[i];
+    if (var / 8 > CPU_PHASE_THRESHOLD)
+        Cpu_Advisory_SetVoltage(1);
+    else
+        Cpu_Advisory_SetVoltage(0);
+    Telemetry_LogEvent("FreqAdvice", (UINTN)var, 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 530: PredictiveForkRegulator ===
+static EFI_STATUS Scheduler_InitPhase530_PredictiveForkRegulator(KERNEL_CONTEXT *ctx) {
+    UINTN prob = 0;
+    AICore_PredictBurstLoad(&prob);
+    if (prob > 90 && ctx->DescriptorCount > 0)
+        ctx->scheduler_pressure_mode = TRUE;
+    Telemetry_LogEvent("ForkRegulator", prob, ctx->scheduler_pressure_mode);
+    return EFI_SUCCESS;
+}
+
 EFI_STATUS SchedulerMind_RunAllPhases(KERNEL_CONTEXT *ctx) {
     EFI_STATUS Status;
-    for (UINTN phase = 451; phase <= 500; ++phase) {
+    for (UINTN phase = 451; phase <= 530; ++phase) {
         switch (phase) {
             case 451: Status = Scheduler_InitPhase451_BootstrapContext(ctx); break;
             case 452: Status = Scheduler_InitPhase452_MapCpuLoad(ctx); break;
@@ -635,6 +887,29 @@ EFI_STATUS SchedulerMind_RunAllPhases(KERNEL_CONTEXT *ctx) {
             case 498: Status = Scheduler_InitPhase498_FallbackMigration(ctx); break;
             case 499: Status = Scheduler_InitPhase499_AttachBootTrustWeight(ctx); break;
             case 500: Status = Scheduler_InitPhase500_FinalizeSchedulerMind(ctx); break;
+            case 501: case 502: case 503: case 504: case 505:
+            case 506: case 507: case 508: case 509: case 510:
+                Status = EFI_SUCCESS; break;
+            case 511: Status = Scheduler_InitPhase511_PreemptiveSchedulerPulse(ctx); break;
+            case 512: Status = Scheduler_InitPhase512_ThreadLatencyProfiler(ctx); break;
+            case 513: Status = Scheduler_InitPhase513_ReactiveAffinityBalancer(ctx); break;
+            case 514: Status = Scheduler_InitPhase514_ThermalEntropyNormalizer(ctx); break;
+            case 515: Status = Scheduler_InitPhase515_GPUOffloadAdvisor(ctx); break;
+            case 516: Status = Scheduler_InitPhase516_TaskEnergyEfficiencyScore(ctx); break;
+            case 517: Status = Scheduler_InitPhase517_DynamicReprioritization(ctx); break;
+            case 518: Status = Scheduler_InitPhase518_EntropyBoundaryClamp(ctx); break;
+            case 519: Status = Scheduler_InitPhase519_SchedulerLoadTrendPredictor(ctx); break;
+            case 520: Status = Scheduler_InitPhase520_TrustEntropyCorrelationModel(ctx); break;
+            case 521: Status = Scheduler_InitPhase521_ThreadEntropySpilloverGuard(ctx); break;
+            case 522: Status = Scheduler_InitPhase522_AITrustDeviationFixer(ctx); break;
+            case 523: Status = Scheduler_InitPhase523_NanotrustDecayShield(ctx); break;
+            case 524: Status = Scheduler_InitPhase524_TaskRetirementHandler(ctx); break;
+            case 525: Status = Scheduler_InitPhase525_GPUBackpressureLimiter(ctx); break;
+            case 526: Status = Scheduler_InitPhase526_EntropyBackfillCompensator(ctx); break;
+            case 527: Status = Scheduler_InitPhase527_QuantumRedistributionAgent(ctx); break;
+            case 528: Status = Scheduler_InitPhase528_ThreadLifecycleMapLogger(ctx); break;
+            case 529: Status = Scheduler_InitPhase529_FrequencyHoppingAdviser(ctx); break;
+            case 530: Status = Scheduler_InitPhase530_PredictiveForkRegulator(ctx); break;
             default: Status = EFI_INVALID_PARAMETER; break;
         }
         if (EFI_ERROR(Status)) {
