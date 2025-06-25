@@ -44,6 +44,18 @@ typedef struct {
     UINTN DescriptorCount;
     UINT64 EntropyScore;
     UINTN MissCount;
+
+    /* Scheduler-specific fields */
+    UINT64 scheduler_entropy_buffer[16];
+    UINTN scheduler_entropy_index;
+    UINTN cpu_load_map[8];
+    UINTN hotspot_cpu;
+    UINTN quantum_table[8];
+    UINT64 entropy_slope_buffer[10];
+    BOOLEAN entropy_stalling;
+    UINT8 thread_numa_map[256];
+    BOOLEAN scheduler_pressure_mode;
+    UINT8 background_priority;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H

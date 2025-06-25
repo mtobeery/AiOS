@@ -9,7 +9,8 @@
 // Forward declarations (modules must implement these)
 EFI_STATUS CpuMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 EFI_STATUS MemoryMind_RunAllPhases(KERNEL_CONTEXT *ctx);
-// Future: EFI_STATUS GpuMind_RunAllPhases(KERNEL_CONTEXT *ctx);
+EFI_STATUS GpuMind_RunAllPhases(KERNEL_CONTEXT *ctx);
+EFI_STATUS SchedulerMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 
 KERNEL_CONTEXT gKernelCtx;
 
@@ -36,7 +37,19 @@ EFI_STATUS AiOS_KernelMain(VOID) {
         return Status;
     }
 
-    // === Placeholder: GPU MIND, SCHEDULER MIND, IO MIND, etc. ===
+    // === PHASE 301–450: GPU MIND ===
+    Status = GpuMind_RunAllPhases(&gKernelCtx);
+    if (EFI_ERROR(Status)) {
+        Telemetry_LogEvent("GpuMindFailure", 3, Status);
+        return Status;
+    }
+
+    // === PHASE 451–460: SCHEDULER MIND ===
+    Status = SchedulerMind_RunAllPhases(&gKernelCtx);
+    if (EFI_ERROR(Status)) {
+        Telemetry_LogEvent("SchedulerMindFailure", 4, Status);
+        return Status;
+    }
 
     // Final AI wrap-up
     gKernelCtx.trust_score = Trust_GetCurrentScore();
