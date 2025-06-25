@@ -74,6 +74,11 @@ typedef struct {
     UINTN snapshot_index;
     UINT64 latency_histogram[50];
     UINTN latency_hist_index;
+    // Scheduler phase 511+ additions
+    UINTN pulse_count;
+    UINT8 trust_penalty_buffer[8];
+    UINTN scheduler_load_prediction[4];
+    INTN trust_entropy_curve;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
