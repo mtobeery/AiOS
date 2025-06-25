@@ -1,11 +1,10 @@
 // io_mind.c - AiOS IO Mind (Phases 561-710)
 
 #include "kernel_shared.h"
+#include "trust_mind.h"
 
 // Forward declarations for external subsystems used by IO mind
 void Telemetry_LogEvent(const CHAR8 *name, UINTN a, UINTN b);
-void Trust_AdjustScore(UINTN id, INTN delta);
-UINT64 Trust_GetCurrentScore(void);
 EFI_STATUS AICore_ReportPhase(const CHAR8 *name, UINTN value);
 EFI_STATUS AICore_ReportEvent(const CHAR8 *name);
 EFI_STATUS AICore_AttachToBootDNA(const CHAR8 *module, UINT64 trust);
