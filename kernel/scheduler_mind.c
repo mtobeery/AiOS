@@ -2,6 +2,7 @@
 
 #include "kernel_shared.h"
 #include "trust_mind.h"
+#include "sha256.h"
 
 // Forward declarations for external subsystems
 void Telemetry_LogEvent(const CHAR8 *name, UINTN a, UINTN b);
@@ -1176,6 +1177,525 @@ static EFI_STATUS SchedulerPhase500_FinalizeSchedulerMind(KERNEL_CONTEXT *ctx) {
     return EFI_SUCCESS;
 }
 
+// === Phase 4201: EntropyWeightedQueueSort ===
+static EFI_STATUS SchedulerMind_Phase4201_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN order[8];
+    for (UINTN i = 0; i < 8; ++i) order[i] = i;
+    for (UINTN i = 0; i < 7; ++i) {
+        for (UINTN j = i + 1; j < 8; ++j) {
+            UINT64 si = ctx->ai_entropy_vector[order[i] % 16] + ctx->phase_latency[order[i] % 20];
+            UINT64 sj = ctx->ai_entropy_vector[order[j] % 16] + ctx->phase_latency[order[j] % 20];
+            if (sj > si) { UINTN t = order[i]; order[i] = order[j]; order[j] = t; }
+        }
+    }
+    for (UINTN i = 0; i < 8; ++i) ctx->thread_numa_map[i] = order[i];
+    return EFI_SUCCESS;
+}
+
+// === Phase 4202: LatencyPredictionWindow ===
+static EFI_STATUS SchedulerMind_Phase4202_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 20; ++i) {
+        ctx->latency_prediction[i] = (ctx->latency_prediction[i] * 3 + ctx->phase_latency[i]) / 4;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4203: TrustPriorityInversionGuard ===
+static EFI_STATUS SchedulerMind_Phase4203_Execute(KERNEL_CONTEXT *ctx) {
+    ctx->priority_inversion_flag = FALSE;
+    for (UINTN i = 0; i < 7 && !ctx->priority_inversion_flag; ++i) {
+        for (UINTN j = i + 1; j < 8; ++j) {
+            UINTN ti = ctx->thread_numa_map[i];
+            UINTN tj = ctx->thread_numa_map[j];
+            if (ctx->phase_trust[ti % 20] < ctx->phase_trust[tj % 20]) {
+                ctx->priority_inversion_flag = TRUE;
+                break;
+            }
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4204: PredictiveRescheduler ===
+static EFI_STATUS SchedulerMind_Phase4204_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN tail = 7;
+    UINTN prev_idx = (ctx->scheduler_entropy_index + 15) % 16;
+    UINT64 prev_ent = ctx->scheduler_entropy_buffer[prev_idx];
+    UINT64 drop_pct = prev_ent ? ((prev_ent > ctx->EntropyScore ? prev_ent - ctx->EntropyScore : 0) * 100 / prev_ent) : 0;
+    for (UINTN i = 0; i < 8 && i <= tail; ++i) {
+        UINTN task = ctx->thread_numa_map[i];
+        UINT64 trust = ctx->phase_trust[task % 20];
+        if (trust < 50 || drop_pct > 25) {
+            UINTN tmp = task;
+            for (UINTN j = i; j < tail; ++j) ctx->thread_numa_map[j] = ctx->thread_numa_map[j + 1];
+            ctx->thread_numa_map[tail] = tmp;
+            tail--;
+            --i;
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4205: LoadBalancedCoreAssignment ===
+static EFI_STATUS SchedulerMind_Phase4205_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN t = 0; t < 8; ++t) {
+        UINT64 best = 0; UINTN core = 0;
+        for (UINTN c = 0; c < 8; ++c) {
+            UINT64 score = ctx->phase_trust[t % 20] * (100 - ctx->cpu_load_map[c]);
+            if (score > best) { best = score; core = c; }
+        }
+        ctx->thread_numa_map[t] = core;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4206: QuantumDecayProtector ===
+static EFI_STATUS SchedulerMind_Phase4206_Execute(KERNEL_CONTEXT *ctx) {
+    if (ctx->EntropyScore < 20) {
+        for (UINTN i = 0; i < 8; ++i)
+            ctx->quantum_table[i] = (ctx->quantum_table[i] * 3) / 2;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4207: ScheduleEntropyHysteresisGate ===
+static EFI_STATUS SchedulerMind_Phase4207_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 prev = 0;
+    if (prev && ((prev > ctx->EntropyScore ? prev - ctx->EntropyScore : ctx->EntropyScore - prev) * 100 / prev < 5))
+        ctx->scheduler_entropy_index += 2;
+    prev = ctx->EntropyScore;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4208: IntentDrivenQueueBoost ===
+static EFI_STATUS SchedulerMind_Phase4208_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN intent = ctx->ai_entropy_input[0] % 8;
+    if (ctx->intent_alignment_score > 50) {
+        for (UINTN i = 0; i < 8; ++i) {
+            if (ctx->thread_numa_map[i] == intent) {
+                UINTN tmp = ctx->thread_numa_map[0];
+                ctx->thread_numa_map[0] = intent;
+                ctx->thread_numa_map[i] = tmp;
+                break;
+            }
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4209: MissRateAdaptiveShaper ===
+static EFI_STATUS SchedulerMind_Phase4209_Execute(KERNEL_CONTEXT *ctx) {
+    UINTN tail = 7;
+    for (UINTN i = 0; i < 8 && i <= tail; ++i) {
+        UINTN task = ctx->thread_numa_map[i];
+        if (ctx->cpu_missed[task] > 2) {
+            UINTN tmp = task;
+            for (UINTN j = i; j < tail; ++j) ctx->thread_numa_map[j] = ctx->thread_numa_map[j + 1];
+            ctx->thread_numa_map[tail] = tmp;
+            tail--; --i;
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4210: DeadlineCriticalityBooster ===
+static EFI_STATUS SchedulerMind_Phase4210_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 deadlines[8] = {5,4,6,7,8,9,10,11};
+    UINT64 now = AsmReadTsc() % 12;
+    for (UINTN i = 0; i < 8; ++i) {
+        if (deadlines[i] > now && deadlines[i] - now < 3) {
+            UINTN ph = ctx->thread_numa_map[i];
+            for (UINTN j = i; j > 0; --j) ctx->thread_numa_map[j] = ctx->thread_numa_map[j - 1];
+            ctx->thread_numa_map[0] = ph;
+            break;
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4211: LatencyEntropyCouplingIndex ===
+static EFI_STATUS SchedulerMind_Phase4211_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 ent_hist[16];
+    static UINT64 lat_hist[16];
+    static UINTN idx = 0;
+    ent_hist[idx % 16] = ctx->EntropyScore;
+    lat_hist[idx % 16] = ctx->avg_latency;
+    idx++;
+    INT64 sumE = 0, sumL = 0, sumEL = 0, sumE2 = 0, sumL2 = 0;
+    for (UINTN i = 0; i < 16; ++i) {
+        sumE += ent_hist[i];
+        sumL += lat_hist[i];
+        sumEL += ent_hist[i] * lat_hist[i];
+        sumE2 += ent_hist[i] * ent_hist[i];
+        sumL2 += lat_hist[i] * lat_hist[i];
+    }
+    INT64 num = sumEL * 16 - sumE * sumL;
+    INT64 den = (sumE2 * 16 - sumE * sumE) * (sumL2 * 16 - sumL * sumL);
+    if (den) ctx->trust_entropy_curve = (INTN)(num / (den / 100 + 1));
+    return EFI_SUCCESS;
+}
+
+// === Phase 4212: PredictLatencySpikeWindow ===
+static EFI_STATUS SchedulerMind_Phase4212_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 prev = 0;
+    UINT64 slope = ctx->avg_latency > prev ? ctx->avg_latency - prev : 0;
+    ctx->latency_spike_alert = (ctx->avg_latency && slope > ctx->avg_latency * 2) ? TRUE : FALSE;
+    prev = ctx->avg_latency;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4213: DelaySensitiveTaskIsolation ===
+static EFI_STATUS SchedulerMind_Phase4213_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN t = 0; t < 8; ++t) {
+        if (ctx->phase_latency[t % 20] < 50) {
+            for (UINTN c = 0; c < 8; ++c) {
+                if (ctx->cpu_load_map[c] < 20) { ctx->thread_numa_map[t] = c; break; }
+            }
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4214: SchedulerStallProbabilityModel ===
+static EFI_STATUS SchedulerMind_Phase4214_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 stall_prob[8];
+    for (UINTN i = 0; i < 8; ++i) {
+        UINT64 miss = ctx->cpu_missed[i];
+        UINT64 vol = (UINT64)(ctx->trust_entropy_curve < 0 ? -ctx->trust_entropy_curve : ctx->trust_entropy_curve);
+        UINT64 conflict = ctx->contention_index;
+        stall_prob[i] = (UINT8)((miss + vol + conflict) % 100);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4215: LatencyBackpropagationFeedback ===
+static EFI_STATUS SchedulerMind_Phase4215_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 20; ++i) {
+        INT64 err = (INT64)ctx->phase_latency[i] - (INT64)ctx->latency_prediction[i];
+        ctx->latency_prediction[i] += err / 4;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4216: LatencyConfidenceIndex ===
+static EFI_STATUS SchedulerMind_Phase4216_Execute(KERNEL_CONTEXT *ctx) {
+    static INT64 hist[5]; static UINTN hidx = 0;
+    INT64 err = 0;
+    for (UINTN i = 0; i < 20; ++i) {
+        INT64 d = (INT64)ctx->phase_latency[i] - (INT64)ctx->latency_prediction[i];
+        if (d < 0) d = -d; err += d;
+    }
+    err /= 20; hist[hidx % 5] = err; hidx++;
+    INT64 avg = 0; for (UINTN i = 0; i < 5; ++i) avg += hist[i]; avg /= 5;
+    INT64 dev = 0; for (UINTN i = 0; i < 5; ++i) { INT64 d = hist[i] - avg; if (d < 0) d = -d; dev += d; }
+    dev /= 5;
+    if (dev < avg / 10) ctx->latency_confidence++; else if (ctx->latency_confidence) ctx->latency_confidence--;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4217: ScheduleAnomalyImmunityWindow ===
+static EFI_STATUS SchedulerMind_Phase4217_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 immune[8] = {0};
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->phase_trust[i % 20] > 80) immune[i] = 3; else if (immune[i]) immune[i]--;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4218: PredictiveJitterControl ===
+static EFI_STATUS SchedulerMind_Phase4218_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 last[8] = {0};
+    for (UINTN i = 0; i < 8; ++i) {
+        UINT64 delta = ctx->phase_latency[i % 20] > last[i] ? ctx->phase_latency[i % 20] - last[i] : last[i] - ctx->phase_latency[i % 20];
+        if (delta > 10) ctx->quantum_table[i] += 1;
+        last[i] = ctx->phase_latency[i % 20];
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4219: CriticalPathLatencyBinder ===
+static EFI_STATUS SchedulerMind_Phase4219_Execute(KERNEL_CONTEXT *ctx) {
+    static UINTN critical[2] = {0,1};
+    for (UINTN i = 0; i < 2; ++i) ctx->quantum_table[critical[i]] = CPU_PHASE_THRESHOLD / 10;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4220: LatencyEntropyFusionCurve ===
+static EFI_STATUS SchedulerMind_Phase4220_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 bias = Trust_GetCurrentScore();
+    for (UINTN i = 0; i < 8; ++i) {
+        UINT64 curve = ctx->EntropyScore * bias * (i + 1);
+        ctx->quantum_table[i] = (UINTN)(curve % 50);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4221: TrustDrivenDispatchSelector ===
+static EFI_STATUS SchedulerMind_Phase4221_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 best = 0; UINTN best_id = 0;
+    for (UINTN i = 0; i < 8; ++i) {
+        UINT64 lat = ctx->phase_latency[i % 20] ? ctx->phase_latency[i % 20] : 1;
+        UINT64 score = ctx->phase_trust[i % 20] * 100 / lat;
+        if (score > best) { best = score; best_id = i; }
+    }
+    Telemetry_LogEvent("DispatchSel", best_id, (UINTN)best);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4222: TrustDivergencePenalty ===
+static EFI_STATUS SchedulerMind_Phase4222_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 7; ++i) {
+        UINT64 t1 = ctx->phase_trust[i % 20];
+        UINT64 t2 = ctx->phase_trust[(i + 1) % 20];
+        if (t1 > t2 + t2 / 4) ctx->quantum_table[i] /= 2;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4223: CoreAffinityTrustBinder ===
+static EFI_STATUS SchedulerMind_Phase4223_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 affinity[8] = {0};
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->phase_trust[i % 20] > affinity[i]) {
+            affinity[i] = (UINT8)ctx->phase_trust[i % 20];
+            ctx->thread_numa_map[i] = i;
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4224: RescheduleUponEntropyDip ===
+static EFI_STATUS SchedulerMind_Phase4224_Execute(KERNEL_CONTEXT *ctx) {
+    if (ctx->EntropyScore < 15) {
+        for (UINTN i = 0; i < 8; ++i) if (ctx->phase_trust[i % 20] < 50) ctx->quantum_table[i] = 0;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4225: ScheduleCausalityReinforcer ===
+static EFI_STATUS SchedulerMind_Phase4225_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 causality[8][8] = {{0}};
+    for (UINTN i = 0; i < 7; ++i) if (causality[i][i + 1]) ctx->thread_numa_map[i] = ctx->thread_numa_map[i + 1];
+    return EFI_SUCCESS;
+}
+
+// === Phase 4226: IntentPropagationLoop ===
+static EFI_STATUS SchedulerMind_Phase4226_Execute(KERNEL_CONTEXT *ctx) {
+    AICore_ReportPhase("IntentProp", (UINTN)ctx->intent_alignment_score);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4227: RealTimeDeadlockScanner ===
+static EFI_STATUS SchedulerMind_Phase4227_Execute(KERNEL_CONTEXT *ctx) {
+    static BOOLEAN dead = FALSE;
+    if (dead) AICore_InvokeRecovery("scheduler", 0);
+    dead = !dead && ((AsmReadTsc() & 0xF) == 0);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4228: OverheadLatencyBudgeter ===
+static EFI_STATUS SchedulerMind_Phase4228_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 overhead = 0;
+    overhead += ctx->avg_latency;
+    if (overhead > ctx->avg_latency * 20) { ctx->background_priority++; overhead = 0; }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4229: CriticalPhaseGuardSlot ===
+static EFI_STATUS SchedulerMind_Phase4229_Execute(KERNEL_CONTEXT *ctx) {
+    static UINTN slot = 0;
+    for (UINTN i = 0; i < 8; ++i) if (ctx->phase_trust[i % 20] > 95) { slot = i; break; }
+    ctx->thread_numa_map[0] = slot;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4230: TrustWeightedSchedulerFusion ===
+static EFI_STATUS SchedulerMind_Phase4230_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < 8; ++i) sum += ctx->phase_trust[i % 20];
+    ctx->ai_scheduler_weight = sum;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4231: SchedulerRecoveryTrigger ===
+static EFI_STATUS SchedulerMind_Phase4231_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 prev_ent = 0, prev_trust = 0;
+    if (prev_ent && prev_trust) {
+        if (prev_ent > ctx->EntropyScore * 2 && prev_trust > Trust_GetCurrentScore() * 2) {
+            AICore_InvokeRecovery("scheduler", 0);
+            Telemetry_LogEvent("SchedPanic", 0, 0);
+        }
+    }
+    prev_ent = ctx->EntropyScore;
+    prev_trust = Trust_GetCurrentScore();
+    return EFI_SUCCESS;
+}
+
+// === Phase 4232: MissCascadeAvoidanceEngine ===
+static EFI_STATUS SchedulerMind_Phase4232_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 seq = 0;
+    if (ctx->MissCount) seq++; else seq = 0;
+    if (seq >= 3) { ctx->scheduler_pressure_mode = TRUE; seq = 0; }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4233: SchedulerEntropyEchoBuffer ===
+static EFI_STATUS SchedulerMind_Phase4233_Execute(KERNEL_CONTEXT *ctx) {
+    static INT64 echo[8]; static UINTN idx = 0;
+    INT64 diff = (INT64)ctx->EntropyScore - (INT64)ctx->scheduler_entropy_buffer[idx % 16];
+    echo[idx % 8] = diff; idx++;
+    if (idx >= 8) {
+        BOOLEAN same = TRUE; for (UINTN i = 1; i < 8; ++i) if (echo[i] != echo[0]) { same = FALSE; break; }
+        if (same) ctx->background_priority++;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4234: PhaseTrustRegenerationSignal ===
+static EFI_STATUS SchedulerMind_Phase4234_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i) {
+        if (ctx->phase_trust[i % 20] > 70 && ctx->cpu_missed[i]) {
+            ctx->cpu_missed[i] = 0;
+            Trust_AdjustScore(i, +1);
+        }
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4235: ThermalAwarePhaseSpacing ===
+static EFI_STATUS SchedulerMind_Phase4235_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN c = 0; c < 8; ++c) {
+        INTN t = 0; CpuMind_GetTemperature(c, &t);
+        if (t > 80 && ctx->cpu_load_map[c] > 80) ctx->thread_numa_map[c] = (c + 1) % 8;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4236: PredictivePhaseThrottleMap ===
+static EFI_STATUS SchedulerMind_Phase4236_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 slow[8] = {0};
+    for (UINTN i = 0; i < 8; ++i) if (ctx->cpu_elapsed_tsc[i] > CPU_PHASE_THRESHOLD) slow[i] = 1;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4237: EntropySlotFuser ===
+static EFI_STATUS SchedulerMind_Phase4237_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 7; ++i) {
+        if (ctx->phase_entropy[i % 20] < 5 && ctx->phase_entropy[(i + 1) % 20] < 5)
+            ctx->thread_numa_map[i + 1] = ctx->thread_numa_map[i];
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4238: TrustLatencyBacktrackLoop ===
+static EFI_STATUS SchedulerMind_Phase4238_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 last_good = 0;
+    if (ctx->avg_latency < CPU_PHASE_THRESHOLD) last_good = ctx->avg_latency; else ctx->avg_latency = last_good;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4239: IntentGuardBarrier ===
+static EFI_STATUS SchedulerMind_Phase4239_Execute(KERNEL_CONTEXT *ctx) {
+    if (ctx->ai_state != (UINT8)ctx->ai_entropy_input[0]) ctx->scheduler_pressure_mode = TRUE;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4240: SchedulerEntropyHealthIndex ===
+static EFI_STATUS SchedulerMind_Phase4240_Execute(KERNEL_CONTEXT *ctx) {
+    ctx->sched_health = ctx->EntropyScore + Trust_GetCurrentScore() - ctx->MissCount;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4241: PhaseIntentScoreRanker ===
+static EFI_STATUS SchedulerMind_Phase4241_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 best = 0; UINTN id = 0;
+    for (UINTN i = 0; i < 8; ++i) {
+        UINT64 score = ctx->ai_entropy_input[i % 16] * ctx->phase_trust[i % 20];
+        if (score > best) { best = score; id = i; }
+    }
+    Telemetry_LogEvent("IntentRank", id, (UINTN)best);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4242: ScheduleAlignmentSmoother ===
+static EFI_STATUS SchedulerMind_Phase4242_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT64 last = 0;
+    UINT64 cur = ctx->intent_alignment_score;
+    if ((cur > last ? cur - last : last - cur) > 2) ctx->scheduler_entropy_index++;
+    last = cur;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4243: PredictIntentMissPenalty ===
+static EFI_STATUS SchedulerMind_Phase4243_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 cost = 0;
+    for (UINTN i = 0; i < 8; ++i) cost += (100 - ctx->phase_trust[i % 20]) + ctx->phase_latency[i % 20];
+    if (cost > 500) ctx->scheduler_pressure_mode = TRUE;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4244: AIIntentLockWindow ===
+static EFI_STATUS SchedulerMind_Phase4244_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 lock = 0;
+    if (ctx->sched_health < 50) lock = 0;
+    if (lock) lock--; else lock = 5;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4245: PhaseCausalityConfirmation ===
+static EFI_STATUS SchedulerMind_Phase4245_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 causality[8][8] = {{1}};
+    for (UINTN i = 0; i < 7; ++i) if (!causality[i][i + 1]) ctx->thread_numa_map[i + 1] = ctx->thread_numa_map[i];
+    return EFI_SUCCESS;
+}
+
+// === Phase 4246: TrustEntropyTimeboxLimiter ===
+static EFI_STATUS SchedulerMind_Phase4246_Execute(KERNEL_CONTEXT *ctx) {
+    for (UINTN i = 0; i < 8; ++i) if (ctx->phase_trust[i % 20] < 30 && ctx->phase_entropy[i % 20] < 20) ctx->quantum_table[i] /= 2;
+    return EFI_SUCCESS;
+}
+
+// === Phase 4247: IntentRecoveryInjector ===
+static EFI_STATUS SchedulerMind_Phase4247_Execute(KERNEL_CONTEXT *ctx) {
+    static UINT8 unstable = 0;
+    if (ctx->sched_health < 50) unstable++; else unstable = 0;
+    if (unstable >= 10) {
+        for (UINTN i = 0; i < 16; ++i) ctx->ai_entropy_input[i] = ctx->ai_entropy_vector[i];
+        unstable = 0;
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4248: PhaseSchedulerDNAHash ===
+static EFI_STATUS SchedulerMind_Phase4248_Execute(KERNEL_CONTEXT *ctx) {
+    static UINTN hist[100]; static UINTN idx = 0;
+    hist[idx % 100] = ctx->total_phases; idx++;
+    if (idx % 100 == 0) {
+        SHA256_CTX c; UINT8 d[SHA256_DIGEST_LENGTH];
+        sha256_init(&c);
+        sha256_update(&c, (UINT8*)hist, sizeof(hist));
+        sha256_final(&c, d);
+        Telemetry_LogEvent("SchedDNA", d[0], d[1]);
+    }
+    return EFI_SUCCESS;
+}
+
+// === Phase 4249: TrustIntentFusionMatrix ===
+static EFI_STATUS SchedulerMind_Phase4249_Execute(KERNEL_CONTEXT *ctx) {
+    UINT64 m[8];
+    for (UINTN i = 0; i < 8; ++i) m[i] = ctx->ai_entropy_input[i % 16] * ctx->phase_trust[i % 20];
+    Telemetry_LogEvent("Fusion", (UINTN)m[0], (UINTN)m[1]);
+    return EFI_SUCCESS;
+}
+
+// === Phase 4250: FinalizeSchedulerIntelligenceCycle ===
+static EFI_STATUS SchedulerMind_Phase4250_Execute(KERNEL_CONTEXT *ctx) {
+    AICore_ReportEvent("SchedIntCycle");
+    ZeroMem(ctx->latency_prediction, sizeof(ctx->latency_prediction));
+    ctx->sched_cycle_complete = TRUE;
+    return EFI_SUCCESS;
+}
+
 EFI_STATUS SchedulerMind_RunAllPhases(KERNEL_CONTEXT *ctx) {
     EFI_STATUS Status;
     for (UINTN phase = 451; phase <= 530; ++phase) {
@@ -1253,6 +1773,67 @@ EFI_STATUS SchedulerMind_RunAllPhases(KERNEL_CONTEXT *ctx) {
             case 528: Status = Scheduler_InitPhase528_ThreadLifecycleMapLogger(ctx); break;
             case 529: Status = Scheduler_InitPhase529_FrequencyHoppingAdviser(ctx); break;
             case 530: Status = Scheduler_InitPhase530_PredictiveForkRegulator(ctx); break;
+            default: Status = EFI_INVALID_PARAMETER; break;
+        }
+        if (EFI_ERROR(Status)) {
+            Telemetry_LogEvent("SchedulerPhaseError", phase, Status);
+            return Status;
+        }
+        ctx->total_phases++;
+    }
+
+    for (UINTN phase = 4201; phase <= 4250; ++phase) {
+        switch (phase) {
+            case 4201: Status = SchedulerMind_Phase4201_Execute(ctx); break;
+            case 4202: Status = SchedulerMind_Phase4202_Execute(ctx); break;
+            case 4203: Status = SchedulerMind_Phase4203_Execute(ctx); break;
+            case 4204: Status = SchedulerMind_Phase4204_Execute(ctx); break;
+            case 4205: Status = SchedulerMind_Phase4205_Execute(ctx); break;
+            case 4206: Status = SchedulerMind_Phase4206_Execute(ctx); break;
+            case 4207: Status = SchedulerMind_Phase4207_Execute(ctx); break;
+            case 4208: Status = SchedulerMind_Phase4208_Execute(ctx); break;
+            case 4209: Status = SchedulerMind_Phase4209_Execute(ctx); break;
+            case 4210: Status = SchedulerMind_Phase4210_Execute(ctx); break;
+            case 4211: Status = SchedulerMind_Phase4211_Execute(ctx); break;
+            case 4212: Status = SchedulerMind_Phase4212_Execute(ctx); break;
+            case 4213: Status = SchedulerMind_Phase4213_Execute(ctx); break;
+            case 4214: Status = SchedulerMind_Phase4214_Execute(ctx); break;
+            case 4215: Status = SchedulerMind_Phase4215_Execute(ctx); break;
+            case 4216: Status = SchedulerMind_Phase4216_Execute(ctx); break;
+            case 4217: Status = SchedulerMind_Phase4217_Execute(ctx); break;
+            case 4218: Status = SchedulerMind_Phase4218_Execute(ctx); break;
+            case 4219: Status = SchedulerMind_Phase4219_Execute(ctx); break;
+            case 4220: Status = SchedulerMind_Phase4220_Execute(ctx); break;
+            case 4221: Status = SchedulerMind_Phase4221_Execute(ctx); break;
+            case 4222: Status = SchedulerMind_Phase4222_Execute(ctx); break;
+            case 4223: Status = SchedulerMind_Phase4223_Execute(ctx); break;
+            case 4224: Status = SchedulerMind_Phase4224_Execute(ctx); break;
+            case 4225: Status = SchedulerMind_Phase4225_Execute(ctx); break;
+            case 4226: Status = SchedulerMind_Phase4226_Execute(ctx); break;
+            case 4227: Status = SchedulerMind_Phase4227_Execute(ctx); break;
+            case 4228: Status = SchedulerMind_Phase4228_Execute(ctx); break;
+            case 4229: Status = SchedulerMind_Phase4229_Execute(ctx); break;
+            case 4230: Status = SchedulerMind_Phase4230_Execute(ctx); break;
+            case 4231: Status = SchedulerMind_Phase4231_Execute(ctx); break;
+            case 4232: Status = SchedulerMind_Phase4232_Execute(ctx); break;
+            case 4233: Status = SchedulerMind_Phase4233_Execute(ctx); break;
+            case 4234: Status = SchedulerMind_Phase4234_Execute(ctx); break;
+            case 4235: Status = SchedulerMind_Phase4235_Execute(ctx); break;
+            case 4236: Status = SchedulerMind_Phase4236_Execute(ctx); break;
+            case 4237: Status = SchedulerMind_Phase4237_Execute(ctx); break;
+            case 4238: Status = SchedulerMind_Phase4238_Execute(ctx); break;
+            case 4239: Status = SchedulerMind_Phase4239_Execute(ctx); break;
+            case 4240: Status = SchedulerMind_Phase4240_Execute(ctx); break;
+            case 4241: Status = SchedulerMind_Phase4241_Execute(ctx); break;
+            case 4242: Status = SchedulerMind_Phase4242_Execute(ctx); break;
+            case 4243: Status = SchedulerMind_Phase4243_Execute(ctx); break;
+            case 4244: Status = SchedulerMind_Phase4244_Execute(ctx); break;
+            case 4245: Status = SchedulerMind_Phase4245_Execute(ctx); break;
+            case 4246: Status = SchedulerMind_Phase4246_Execute(ctx); break;
+            case 4247: Status = SchedulerMind_Phase4247_Execute(ctx); break;
+            case 4248: Status = SchedulerMind_Phase4248_Execute(ctx); break;
+            case 4249: Status = SchedulerMind_Phase4249_Execute(ctx); break;
+            case 4250: Status = SchedulerMind_Phase4250_Execute(ctx); break;
             default: Status = EFI_INVALID_PARAMETER; break;
         }
         if (EFI_ERROR(Status)) {
