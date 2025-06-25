@@ -156,6 +156,23 @@ typedef struct {
     UINT8   ai_state;
     BOOLEAN ai_alignment_confirmed;
     BOOLEAN ai_finalized;
+    /* Selfcoder fields */
+    BOOLEAN selfcoder_active;
+    UINT64  phase_queue[8];
+    UINT64  selfcoder_trust_matrix[4][4];
+    UINT64  selfcoder_plan[3];
+    UINT64  generation_log[16];
+    UINT8   sandbox_result;
+    UINT8   sandbox_status;
+    UINT64  boot_dna_history[16];
+    UINT64  conflict_log[8];
+    UINT64  rollback_slot[8];
+    UINT64  phase_budget[16];
+    UINT64  behavior_log[16];
+    UINT64  dna_phase_fingerprint[16];
+    UINT64  entropy_budget[16];
+    UINT64  phase_opcode_map[16];
+    UINT64  trust_slope[16];
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
