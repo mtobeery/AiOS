@@ -79,6 +79,12 @@ typedef struct {
     UINT8 trust_penalty_buffer[8];
     UINTN scheduler_load_prediction[4];
     INTN trust_entropy_curve;
+    UINT64 latency_prediction[20];
+    BOOLEAN priority_inversion_flag;
+    BOOLEAN latency_spike_alert;
+    UINT8 latency_confidence;
+    UINT64 sched_health;
+    BOOLEAN sched_cycle_complete;
     /* IO mind fields */
     UINT64 device_entropy_map[16];
     UINT64 io_trust_map[3];
