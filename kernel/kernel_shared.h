@@ -109,6 +109,17 @@ typedef struct {
     UINT64 ai_entropy_vector[16];
     UINT64 trust_recovery_map[16];
     BOOLEAN ai_core_block_b_ready;
+    BOOLEAN ai_gpu_delegate_ready;
+    UINT64  ai_scheduler_weight;
+    UINT8   entropy_usage_percent;
+    UINT64  ai_root_reasoning_tree_hash;
+    INT16   ai_rule_weights[961];
+    UINT64  ai_trust_matrix[10][10];
+    UINT64  ai_entropy_input[16];
+    UINT64  ai_prediction_cache[32];
+    UINT8   ai_advisory_signature[32];
+    UINT8   ai_state;
+    BOOLEAN ai_finalized;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
