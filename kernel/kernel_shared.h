@@ -156,6 +156,34 @@ typedef struct {
     UINT8   ai_state;
     BOOLEAN ai_alignment_confirmed;
     BOOLEAN ai_finalized;
+
+    /* Entropy mind fields */
+    UINT8   entropy_source_score[3];
+    struct { UINT64 mean; UINT64 stddev; } entropy_baseline;
+    UINT64  entropy_heatmap[10][10];
+    INT64   entropy_prediction_delta[5];
+    INT64   entropy_prediction_weights[5];
+    UINT8   entropy_density_score[3];
+    UINT64  entropy_thermal_correlation;
+    UINT64  entropy_recovery_time;
+    UINT64  entropy_phase_map[100];
+    UINT8   entropy_resilience_factor;
+    UINT8   entropy_stability_window;
+    INT64   entropy_micro_drift;
+    UINT64  entropy_shock_buffer[16];
+    UINT8   entropy_blindspot_flags[10];
+    UINT64  entropy_load_forecast;
+    UINT64  entropy_stability_pulse[16];
+    UINT64  entropy_ai_reflection[10];
+    UINT64  entropy_cluster_count;
+    INT64   entropy_weights[5];
+    UINT64  entropy_burst_prediction;
+    UINT64  entropy_context_noise[3];
+    UINT8   entropy_control_mode;
+    UINT8   meta_confidence;
+    UINT64  ai_uncertainty_input;
+    BOOLEAN entropy_mind_ready;
+    BOOLEAN entropy_mind_locked;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
