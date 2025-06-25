@@ -79,6 +79,17 @@ typedef struct {
     UINT8 trust_penalty_buffer[8];
     UINTN scheduler_load_prediction[4];
     INTN trust_entropy_curve;
+    /* IO mind fields */
+    UINT64 device_entropy_map[16];
+    UINT64 io_trust_map[3];
+    UINT64 io_entropy_buffer[16];
+    UINT8 io_latency_flags[16];
+    UINTN io_queue_stall[8];
+    UINT64 io_trust_curves[3];
+    UINTN io_miss_count;
+    BOOLEAN io_sleep_state;
+    BOOLEAN io_mirror_built;
+    UINTN io_active_device;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H

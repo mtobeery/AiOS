@@ -11,6 +11,7 @@ EFI_STATUS CpuMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 EFI_STATUS MemoryMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 EFI_STATUS GpuMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 EFI_STATUS SchedulerMind_RunAllPhases(KERNEL_CONTEXT *ctx);
+EFI_STATUS IOMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 
 KERNEL_CONTEXT gKernelCtx;
 
@@ -48,6 +49,13 @@ EFI_STATUS AiOS_KernelMain(VOID) {
     Status = SchedulerMind_RunAllPhases(&gKernelCtx);
     if (EFI_ERROR(Status)) {
         Telemetry_LogEvent("SchedulerMindFailure", 4, Status);
+        return Status;
+    }
+
+    // === PHASE 561–600: IO MIND ===
+    Status = IOMind_RunAllPhases(&gKernelCtx);
+    if (EFI_ERROR(Status)) {
+        Telemetry_LogEvent("IOMindFailure", 5, Status);
         return Status;
     }
 
