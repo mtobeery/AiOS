@@ -56,6 +56,24 @@ typedef struct {
     UINT8 thread_numa_map[256];
     BOOLEAN scheduler_pressure_mode;
     UINT8 background_priority;
+    // Phase 461+ enhancements
+    UINT64 phase_entropy[20];
+    UINT64 phase_trust[20];
+    UINT64 phase_latency[20];
+    UINTN phase_history_index;
+    UINT64 avg_trust;
+    UINT64 avg_latency;
+    UINT64 contention_index;
+    UINT64 entropy_gap;
+    struct {
+        UINTN core_id;
+        UINTN task_id;
+        UINT64 trust;
+        UINT64 latency;
+    } snapshot_buffer[64];
+    UINTN snapshot_index;
+    UINT64 latency_histogram[50];
+    UINTN latency_hist_index;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
