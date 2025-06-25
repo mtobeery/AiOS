@@ -94,6 +94,11 @@ typedef struct {
     UINT64 boot_dna_trust[16];
     UINT64 final_io_summary;
     BOOLEAN io_mind_complete;
+    /* Trust mind fields */
+    UINT64 kernel_trust_score;
+    BOOLEAN trust_ready;
+    BOOLEAN trust_finalized;
+    UINT8  trust_anchor[32];
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
