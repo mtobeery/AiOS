@@ -1,0 +1,60 @@
+#ifndef ENTROPY_MIND_H
+#define ENTROPY_MIND_H
+
+#include <Uefi.h>
+#include "kernel_shared.h"
+
+EFI_STATUS EntropyMind_Phase751_EvaluateSourceStrength(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase752_CalibrateBaseline(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase753_DetectSpikeAnomaly(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase754_BuildHeatmapGrid(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase755_TrackPredictiveVariance(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase756_IntegrateWithTrust(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase757_ScanThermalEntropyLink(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase758_RescueFlatline(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase759_ScoreEntropyDensity(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase760_LogRecoveryTiming(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase761_BuildPhaseInfluenceMap(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase762_CalculateResilienceFactor(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase763_EmitFusionPulse(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase764_RefineStabilityWindow(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase765_AnalyzeMicroDrift(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase766_PrepareShockBuffer(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase767_EstimateBlindspots(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase768_ForecastEntropyLoad(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase769_ModulateRecoveryPriority(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase770_VerifyInjection(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase771_LogStabilityPulse(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase772_SyncTrustEntropyDrift(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase773_ClassifyControlMode(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase774_ApplyHysteresisLimits(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase775_BalancePredictorWeights(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase776_LinkAIReflexWithEntropy(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase777_DetectSpiralPattern(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase778_TriggerEmergencyProtocol(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase779_SynthesizeRiskIntoConfidence(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase780_FinalizeEntropyLogic(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase781_AnalyzeOscillationPatterns(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase782_EmitRecoveryIndex(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase783_DetectAnomalyClusters(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase784_RebalancePhaseWeights(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase785_AnticipateEntropyBurst(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase786_MonitorReinjectionCooldown(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase787_MapContextualNoise(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase788_CertifyEntropyUncertainty(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase789_TraceAIReflection(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase790_BalanceTrendSlope(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase791_ScaleSystemConfidence(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase792_CheckEntropyConvergence(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase793_ApplyTrustPenaltyFromEntropy(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase794_ExpandForecastHorizon(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase795_EmitRecoveryScore(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase796_ClassifyThreatScenario(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase797_SuppressOverreaction(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase798_LimitEntropySaturation(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase799_ReconcileEntropyMismatch(KERNEL_CONTEXT *ctx);
+EFI_STATUS EntropyMind_Phase800_FinalizeMind(KERNEL_CONTEXT *ctx);
+
+EFI_STATUS EntropyMind_RunAllPhases(KERNEL_CONTEXT *ctx);
+
+#endif // ENTROPY_MIND_H
