@@ -5,6 +5,7 @@
 #include "telemetry_mind.h"     // Telemetry and monitoring
 #include "trust_mind.h"         // System-wide trust score tracking
 #include "ai_core.h"            // Central AI agent and context
+#include "kernel_mind.h"        // Kernel self-awareness phases
 
 // Forward declarations (modules must implement these)
 EFI_STATUS CpuMind_RunAllPhases(KERNEL_CONTEXT *ctx);
@@ -13,6 +14,7 @@ EFI_STATUS GpuMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 EFI_STATUS SchedulerMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 EFI_STATUS IOMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 EFI_STATUS StorageMind_RunAllPhases(KERNEL_CONTEXT *ctx);
+EFI_STATUS KernelMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 
 KERNEL_CONTEXT gKernelCtx;
 
@@ -64,6 +66,13 @@ EFI_STATUS AiOS_KernelMain(VOID) {
     Status = StorageMind_RunAllPhases(&gKernelCtx);
     if (EFI_ERROR(Status)) {
         Telemetry_LogEvent("StorageMindFailure", 6, Status);
+        return Status;
+    }
+
+    // === PHASE 951–980: KERNEL SELF-AWARENESS MIND ===
+    Status = KernelMind_RunAllPhases(&gKernelCtx);
+    if (EFI_ERROR(Status)) {
+        Telemetry_LogEvent("KernelMindFailure", 7, Status);
         return Status;
     }
 
