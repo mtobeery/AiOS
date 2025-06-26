@@ -215,6 +215,14 @@ typedef struct {
     UINT64  power_confidence_score;
     UINT8   cpu_tdp_percent;
     BOOLEAN power_mind_ready;
+    UINT64  phase_energy_log[64];
+    UINTN   energy_log_index;
+    UINT64  energy_heatmap[10][10];
+    BOOLEAN power_precollapse_flag;
+    BOOLEAN power_guardian_mode;
+    BOOLEAN power_data_quarantined;
+    UINT8   predicted_sleep_state;
+    BOOLEAN power_mind_finalized;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H

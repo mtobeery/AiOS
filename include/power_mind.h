@@ -34,6 +34,26 @@ EFI_STATUS PowerMind_Phase927_ActivateOverpowerPrevention(KERNEL_CONTEXT *ctx);
 EFI_STATUS PowerMind_Phase928_LogConvergence(KERNEL_CONTEXT *ctx);
 EFI_STATUS PowerMind_Phase929_ApplyBackoffTimer(KERNEL_CONTEXT *ctx);
 EFI_STATUS PowerMind_Phase930_FinalizePowerMind(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase931_WatchForTrustViolations(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase932_ReallocateKernelPower(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase933_ForecastCollapse(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase934_TuneIntentToPowerEntropy(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase935_EnterUltraLowPower(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase936_LogPhaseEnergyAudit(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase937_BuildEnergyHeatmap(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase938_HandleMistrustEvent(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase939_BalanceIntentEnergy(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase940_PredictSleepDepth(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase941_ReschedulePhasesByPower(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase942_EnforceSaturationThreshold(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase943_MonitorConvergence(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase944_ClassifyPowerAnomalies(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase945_ValidateGPUVoltage(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase946_ForecastAgingCurve(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase947_HandleIntentCollisions(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase948_QuarantinePowerFaults(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase949_EmitDigest(KERNEL_CONTEXT *ctx);
+EFI_STATUS PowerMind_Phase950_FinalizeExecution(KERNEL_CONTEXT *ctx);
 
 EFI_STATUS PowerMind_RunAllPhases(KERNEL_CONTEXT *ctx);
 
