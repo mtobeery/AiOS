@@ -267,6 +267,202 @@ EFI_STATUS PowerMind_Phase930_FinalizePowerMind(KERNEL_CONTEXT *ctx) {
     return EFI_SUCCESS;
 }
 
+EFI_STATUS PowerMind_Phase931_WatchForTrustViolations(KERNEL_CONTEXT *ctx) {
+    UINT64 budget = ctx->phase_entropy[ctx->phase_history_index % 20];
+    UINT64 used = ctx->phase_latency[ctx->phase_history_index % 20];
+    if (budget && used > (budget * 125) / 100) {
+        ctx->power_anomaly_log[ctx->snapshot_index % 16] = AsmReadTsc();
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase932_ReallocateKernelPower(KERNEL_CONTEXT *ctx) {
+    if (ctx->pulse_count == 0 && ctx->cpu_tdp_percent > 5)
+        ctx->cpu_tdp_percent -= 5;
+    if (ctx->intent_alignment_score > 80)
+        ctx->ai_scheduler_weight += 5;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase933_ForecastCollapse(KERNEL_CONTEXT *ctx) {
+    static INT8 prev_ds = 0;
+    static INT64 prev_es = 0;
+    INT8 ds = ctx->discharge_slope;
+    INT64 es = ctx->entropy_slope_buffer[0];
+    if (ds < prev_ds && es < prev_es)
+        ctx->power_precollapse_flag = TRUE;
+    prev_ds = ds;
+    prev_es = es;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase934_TuneIntentToPowerEntropy(KERNEL_CONTEXT *ctx) {
+    if (ctx->intent_alignment_score > 80 && ctx->EntropyScore < 50 && ctx->battery_percent < 20)
+        ctx->intent_alignment_score = (ctx->intent_alignment_score * 60) / 100;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase935_EnterUltraLowPower(KERNEL_CONTEXT *ctx) {
+    if (ctx->battery_percent <= 2) {
+        ctx->background_priority = 0;
+        ctx->ai_gpu_delegate_ready = FALSE;
+        ctx->power_guardian_mode = TRUE;
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase936_LogPhaseEnergyAudit(KERNEL_CONTEXT *ctx) {
+    ctx->phase_energy_log[ctx->energy_log_index % 64] = ctx->phase_latency[ctx->phase_history_index % 20];
+    ctx->energy_log_index++;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase937_BuildEnergyHeatmap(KERNEL_CONTEXT *ctx) {
+    UINTN col = ctx->snapshot_index % 10;
+    for (UINTN i = 0; i < 10; ++i) {
+        UINT64 val = ctx->phase_entropy[i];
+        if (val > (ctx->entropy_load_forecast * 120) / 100)
+            ctx->energy_heatmap[i][col]++;
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase938_HandleMistrustEvent(KERNEL_CONTEXT *ctx) {
+    if (ctx->battery_trust_index < 40) {
+        ctx->trust_freeze_count = 5;
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase939_BalanceIntentEnergy(KERNEL_CONTEXT *ctx) {
+    static UINTN mono = 0;
+    if (ctx->ai_scheduler_weight > ctx->EntropyScore)
+        mono++;
+    else
+        mono = 0;
+    if (mono >= 5)
+        ctx->ai_scheduler_weight /= 2;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase940_PredictSleepDepth(KERNEL_CONTEXT *ctx) {
+    UINT64 load = 0;
+    for (UINTN i = 0; i < 4; ++i)
+        load += ctx->scheduler_load_prediction[i];
+    load /= 4;
+    if (load < 20)
+        ctx->predicted_sleep_state = 10;
+    else if (load < 50)
+        ctx->predicted_sleep_state = 6;
+    else
+        ctx->predicted_sleep_state = 3;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase941_ReschedulePhasesByPower(KERNEL_CONTEXT *ctx) {
+    if (ctx->battery_percent < 10) {
+        UINT64 tmp = ctx->phase_latency[0];
+        ctx->phase_latency[0] = ctx->phase_latency[19];
+        ctx->phase_latency[19] = tmp;
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase942_EnforceSaturationThreshold(KERNEL_CONTEXT *ctx) {
+    if (ctx->cpu_tdp_percent > 95) {
+        ctx->ai_gpu_delegate_ready = FALSE;
+        ctx->io_sleep_state = TRUE;
+        ctx->ai_scheduler_weight = (ctx->ai_scheduler_weight * 9) / 10;
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase943_MonitorConvergence(KERNEL_CONTEXT *ctx) {
+    static UINTN tick = 0;
+    static INT64 pt = 0, pp = 0, pe = 0;
+    tick++;
+    if (tick % 8 == 0) {
+        INT64 nt = ctx->trust_entropy_curve;
+        INT64 np = ctx->discharge_slope;
+        INT64 ne = ctx->entropy_micro_drift;
+        INT64 var = llabs(nt - pt) + llabs(np - pp) + llabs(ne - pe);
+        if (var < 5)
+            ctx->power_anomaly_log[ctx->snapshot_index % 16] = 0;
+        pt = nt; pp = np; pe = ne;
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase944_ClassifyPowerAnomalies(KERNEL_CONTEXT *ctx) {
+    UINT64 weight = 0;
+    for (UINTN i = 0; i < 3; ++i)
+        weight += ctx->phase_entropy[i] + ctx->thermal_phase_impact_map[i];
+    ctx->power_confidence_score = weight;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase945_ValidateGPUVoltage(KERNEL_CONTEXT *ctx) {
+    UINT64 cur = gVoltageSamples[(gVoltIdx + 7) % 8];
+    UINT64 prev = gVoltageSamples[(gVoltIdx + 6) % 8];
+    if (ctx->ai_state == 0 && prev && llabs((INT64)cur - (INT64)prev) * 100 / prev > 5) {
+        ctx->shared_trust_cache[1] = (ctx->shared_trust_cache[1] * 9) / 10;
+        Telemetry_LogEvent("GPUVoltAnom", (UINTN)cur, (UINTN)prev);
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase946_ForecastAgingCurve(KERNEL_CONTEXT *ctx) {
+    static UINT64 wear_sum = 0;
+    static UINTN cycles = 0;
+    wear_sum += ctx->nvme_unsafe_shutdowns;
+    cycles++;
+    if (cycles >= 100) {
+        UINT64 avg = wear_sum / 100;
+        ctx->power_confidence_score = 100 - avg;
+        wear_sum = 0;
+        cycles = 0;
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase947_HandleIntentCollisions(KERNEL_CONTEXT *ctx) {
+    static UINTN collisions = 0;
+    if (ctx->intent_alignment_score > 90 && ctx->ai_scheduler_weight > ctx->EntropyScore)
+        collisions++;
+    else
+        collisions = 0;
+    if (collisions)
+        ctx->ai_state ^= 1;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase948_QuarantinePowerFaults(KERNEL_CONTEXT *ctx) {
+    UINT64 sum = 0;
+    for (UINTN i = 0; i < 8; ++i)
+        sum += gVoltageSamples[i];
+    if (sum == 0 || sum == ~0ULL)
+        ctx->power_data_quarantined = TRUE;
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase949_EmitDigest(KERNEL_CONTEXT *ctx) {
+    static UINTN tick = 0;
+    tick++;
+    if (tick % 50 == 0) {
+        UINTN score = (ctx->battery_percent + (UINTN)ctx->EntropyScore + (UINTN)ctx->trust_score) / 3;
+        Telemetry_LogEvent("PowerDigest", score, ctx->battery_trust_index);
+    }
+    return EFI_SUCCESS;
+}
+
+EFI_STATUS PowerMind_Phase950_FinalizeExecution(KERNEL_CONTEXT *ctx) {
+    ctx->power_mind_finalized = TRUE;
+    for (UINTN i = 0; i < 16; ++i)
+        ctx->power_anomaly_log[i] = 0;
+    Telemetry_LogEvent("PowerDone", ctx->battery_percent, ctx->discharge_slope);
+    return EFI_SUCCESS;
+}
+
 EFI_STATUS PowerMind_RunAllPhases(KERNEL_CONTEXT *ctx) {
     EFI_STATUS Status;
     if ((Status = PowerMind_Phase901_ModelBatteryDischargeCurve(ctx))) return Status;
@@ -299,6 +495,26 @@ EFI_STATUS PowerMind_RunAllPhases(KERNEL_CONTEXT *ctx) {
     if ((Status = PowerMind_Phase928_LogConvergence(ctx))) return Status;
     if ((Status = PowerMind_Phase929_ApplyBackoffTimer(ctx))) return Status;
     if ((Status = PowerMind_Phase930_FinalizePowerMind(ctx))) return Status;
+    if ((Status = PowerMind_Phase931_WatchForTrustViolations(ctx))) return Status;
+    if ((Status = PowerMind_Phase932_ReallocateKernelPower(ctx))) return Status;
+    if ((Status = PowerMind_Phase933_ForecastCollapse(ctx))) return Status;
+    if ((Status = PowerMind_Phase934_TuneIntentToPowerEntropy(ctx))) return Status;
+    if ((Status = PowerMind_Phase935_EnterUltraLowPower(ctx))) return Status;
+    if ((Status = PowerMind_Phase936_LogPhaseEnergyAudit(ctx))) return Status;
+    if ((Status = PowerMind_Phase937_BuildEnergyHeatmap(ctx))) return Status;
+    if ((Status = PowerMind_Phase938_HandleMistrustEvent(ctx))) return Status;
+    if ((Status = PowerMind_Phase939_BalanceIntentEnergy(ctx))) return Status;
+    if ((Status = PowerMind_Phase940_PredictSleepDepth(ctx))) return Status;
+    if ((Status = PowerMind_Phase941_ReschedulePhasesByPower(ctx))) return Status;
+    if ((Status = PowerMind_Phase942_EnforceSaturationThreshold(ctx))) return Status;
+    if ((Status = PowerMind_Phase943_MonitorConvergence(ctx))) return Status;
+    if ((Status = PowerMind_Phase944_ClassifyPowerAnomalies(ctx))) return Status;
+    if ((Status = PowerMind_Phase945_ValidateGPUVoltage(ctx))) return Status;
+    if ((Status = PowerMind_Phase946_ForecastAgingCurve(ctx))) return Status;
+    if ((Status = PowerMind_Phase947_HandleIntentCollisions(ctx))) return Status;
+    if ((Status = PowerMind_Phase948_QuarantinePowerFaults(ctx))) return Status;
+    if ((Status = PowerMind_Phase949_EmitDigest(ctx))) return Status;
+    if ((Status = PowerMind_Phase950_FinalizeExecution(ctx))) return Status;
     return EFI_SUCCESS;
 }
 
