@@ -1,0 +1,50 @@
+#ifndef THERMAL_MIND_H
+#define THERMAL_MIND_H
+
+#include <Uefi.h>
+#include "kernel_shared.h"
+
+EFI_STATUS ThermalMind_Phase801_InitializeThermalBaseline(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase802_DetectGradientSpike(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase803_ModulateTrustWithHeat(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase804_ScalePhaseExecution(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase805_CorrelateEntropyDisruption(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase806_EvaluateSafetyMargin(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase807_TraceThermalInfluence(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase808_AnalyzeThermalLatency(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase809_EmitResilienceScore(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase810_ClusterThermalAnomalies(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase811_TrainThermalCurveModel(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase812_ModulateIntentWithHeat(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase813_AdviseIOThrottling(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase814_NormalizeTrustSpikes(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase815_RankRootCauses(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase816_LinkToPowerMind(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase817_ResyncIntentUnderHeat(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase818_BuildEntropyThermalMap(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase819_SelfCorrectAIUnderHeat(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase820_FinalizeThermalLogic(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase821_EmitThermalStressForecast(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase822_ClassifyHotZone(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase823_ActivateTrustShield(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase824_AdjustConfidenceBands(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase825_ThrottleEntropyPhases(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase826_EmitImpactScores(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase827_ApplyHysteresisGate(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase828_LimitThermalReflex(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase829_ModelTrustTriangle(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase830_VerifyCoreSymmetry(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase831_GenerateFingerprint(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase832_TriggerFailover(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase833_AnticipateGPUHeatWave(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase834_TraceReflectionEffect(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase835_EscalateSafeMode(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase836_EmitDiscrepancyAlert(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase837_PlanReentryTiming(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase838_EncodeThermalContext(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase839_TuneAIForHeatAvoidance(KERNEL_CONTEXT *ctx);
+EFI_STATUS ThermalMind_Phase840_FinalizeExecution(KERNEL_CONTEXT *ctx);
+
+EFI_STATUS ThermalMind_RunAllPhases(KERNEL_CONTEXT *ctx);
+
+#endif // THERMAL_MIND_H

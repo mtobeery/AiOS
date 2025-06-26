@@ -157,6 +157,16 @@ typedef struct {
     BOOLEAN ai_alignment_confirmed;
     BOOLEAN ai_finalized;
 
+    /* Thermal mind fields */
+    struct { UINT64 cpu_mean; UINT64 gpu_mean; UINT64 cpu_stddev; UINT64 gpu_stddev; } thermal_baseline;
+    UINT64  thermal_rise_rate;
+    UINT64  thermal_phase_impact_map[100];
+    UINT64  thermal_forecast[20];
+    UINT8   thermal_hot_zone_id;
+    BOOLEAN thermal_safe_mode;
+    BOOLEAN thermal_mind_ready;
+    BOOLEAN thermal_mind_finalized;
+
     /* Entropy mind fields */
     UINT8   entropy_source_score[3];
     struct { UINT64 mean; UINT64 stddev; } entropy_baseline;
