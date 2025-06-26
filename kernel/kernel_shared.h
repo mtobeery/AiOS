@@ -205,6 +205,16 @@ typedef struct {
     UINT8   quarantine_list[16];
     BOOLEAN vlan_alert;
     BOOLEAN network_mind_ready;
+    /* Power mind fields */
+    UINT8   battery_percent;
+    INT8    battery_curve[64];
+    INT8    discharge_slope;
+    UINT64  power_anomaly_log[16];
+    BOOLEAN power_safe_mode;
+    UINT8   battery_trust_index;
+    UINT64  power_confidence_score;
+    UINT8   cpu_tdp_percent;
+    BOOLEAN power_mind_ready;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
