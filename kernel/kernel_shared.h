@@ -194,6 +194,17 @@ typedef struct {
     UINT64  ai_uncertainty_input;
     BOOLEAN entropy_mind_ready;
     BOOLEAN entropy_mind_locked;
+
+    /* Network mind fields */
+    UINT8   mac_trust_profile[16];
+    UINT16  vlan_context[16];
+    UINT64  packet_entropy_score[32];
+    UINT64  anomaly_fingerprint[8][2];
+    UINT64  route_trust_score;
+    UINT8   anomaly_trend[32];
+    UINT8   quarantine_list[16];
+    BOOLEAN vlan_alert;
+    BOOLEAN network_mind_ready;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
