@@ -223,6 +223,25 @@ typedef struct {
     BOOLEAN power_data_quarantined;
     UINT8   predicted_sleep_state;
     BOOLEAN power_mind_finalized;
+
+    /* Kernel self-awareness fields */
+    VOID    *kernel_self_state;
+    UINT8    meta_goal_progress[16];
+    UINT64   fused_trust_score;
+    UINT64   phase_cognition_map[50];
+    INT64    kernel_self_trust_delta;
+    INT64    self_trust_slope[16];
+    UINT64   conscious_state_vector[8];
+    UINT8    ego_vector[16];
+    UINTN    forecast_horizon;
+    BOOLEAN  kernel_awake;
+    UINT8    reflection_weight;
+    UINT8    reflection_flip_count;
+    UINT64   trust_entropy_map[16];
+    UINT64   goal_momentum[16];
+    UINTN    next_conscious_phase;
+    BOOLEAN  feedback_loop_final;
+    BOOLEAN  meta_cognition_final;
 } KERNEL_CONTEXT;
 
 #endif // KERNEL_SHARED_H
